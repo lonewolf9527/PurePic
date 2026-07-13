@@ -1,0 +1,22 @@
+# Local design documents and reference images
+/Doc/
+
+# Rust build output
+/target/
+
+# Local tools and editors
+/.vs/
+/.vscode/
+/.idea/
+*.user
+*.suo
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
