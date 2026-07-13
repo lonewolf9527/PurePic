@@ -1,5 +1,8 @@
 use std::mem::size_of;
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, channel};
 
+use crate::image::{DecodedImage, decode_preview};
 use crate::platform::chrome::{apply_dwm_attributes, non_client_hit_test};
 use crate::render::Renderer;
 use purepic::ui::chrome::CaptionButton;
@@ -17,22 +20,27 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
     DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW, HTCLOSE,
-    HTMAXBUTTON, HTMINBUTTON, IDC_ARROW, IsZoomed, LoadCursorW, MSG, PostQuitMessage,
+    HTMAXBUTTON, HTMINBUTTON, IDC_ARROW, IsZoomed, LoadCursorW, MSG, PostMessageW, PostQuitMessage,
     RegisterClassExW, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
-    WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCMOUSELEAVE,
+    WM_APP, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCMOUSELEAVE,
     WM_NCMOUSEMOVE, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{Error, Result, w};
 
 const INITIAL_WIDTH: i32 = 1280;
 const INITIAL_HEIGHT: i32 = 800;
+const WM_APP_IMAGE_READY: u32 = WM_APP + 1;
+
+type ImageLoadResult = std::result::Result<DecodedImage, String>;
 
 struct WindowState {
     renderer: Renderer,
+    image_receiver: Receiver<ImageLoadResult>,
+    requested_path: Option<PathBuf>,
 }
 
-pub fn run() -> Result<()> {
+pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     // The manifest is authoritative. This call keeps development builds DPI-aware
     // if the executable is launched without its embedded manifest.
     let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
@@ -86,16 +94,33 @@ pub fn run() -> Result<()> {
     }
     let mut client = RECT::default();
     unsafe { GetClientRect(hwnd, &mut client)? };
+    let (image_sender, image_receiver) = channel();
+    let mut renderer = Renderer::new(
+        hwnd,
+        unsafe { GetDpiForWindow(hwnd) },
+        (client.right - client.left).max(0) as u32,
+        (client.bottom - client.top).max(0) as u32,
+    )?;
+    if let Some(path) = &image_path {
+        renderer.set_loading(path);
+    }
     let state = Box::new(WindowState {
-        renderer: Renderer::new(
-            hwnd,
-            unsafe { GetDpiForWindow(hwnd) },
-            (client.right - client.left).max(0) as u32,
-            (client.bottom - client.top).max(0) as u32,
-        )?,
+        renderer,
+        image_receiver,
+        requested_path: image_path.clone(),
     });
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+    }
+
+    if let Some(path) = image_path {
+        spawn_image_decode(
+            hwnd,
+            path,
+            (client.right - client.left).max(1) as u32,
+            (client.bottom - client.top).max(1) as u32,
+            image_sender,
+        );
     }
 
     unsafe {
@@ -173,6 +198,28 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_APP_IMAGE_READY => {
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                while let Ok(result) = state.image_receiver.try_recv() {
+                    match result {
+                        Ok(image) => {
+                            if let Err(error) = state.renderer.set_image(image)
+                                && let Some(path) = &state.requested_path
+                            {
+                                state.renderer.set_image_error(path, &error.to_string());
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(path) = &state.requested_path {
+                                state.renderer.set_image_error(path, &error);
+                            }
+                        }
+                    }
+                }
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             let width = (lparam.0 as u32 & 0xFFFF) as u32;
             let height = ((lparam.0 as u32 >> 16) & 0xFFFF) as u32;
@@ -230,4 +277,21 @@ fn caption_button_from_hit(hit: u32) -> CaptionButton {
         HTCLOSE => CaptionButton::Close,
         _ => CaptionButton::None,
     }
+}
+
+fn spawn_image_decode(
+    hwnd: HWND,
+    path: PathBuf,
+    target_width: u32,
+    target_height: u32,
+    sender: std::sync::mpsc::Sender<ImageLoadResult>,
+) {
+    let raw_hwnd = hwnd.0 as usize;
+    std::thread::spawn(move || {
+        let result =
+            decode_preview(&path, target_width, target_height).map_err(|error| error.to_string());
+        let _ = sender.send(result);
+        let hwnd = HWND(raw_hwnd as *mut _);
+        let _ = unsafe { PostMessageW(Some(hwnd), WM_APP_IMAGE_READY, WPARAM(0), LPARAM(0)) };
+    });
 }

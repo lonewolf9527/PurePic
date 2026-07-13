@@ -1,14 +1,17 @@
+use crate::image::DecodedImage;
 use purepic::ui::chrome::CaptionButton;
 use purepic::ui::layout::{LayoutInput, RectF, compute_layout};
 use windows::Win32::Foundation::{E_FAIL, HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
+    D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_FACTORY_OPTIONS,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device,
-    ID2D1DeviceContext, ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_LINEAR,
+    D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image,
+    ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
@@ -70,6 +73,16 @@ pub struct Renderer {
     height_px: u32,
     caption_hot: CaptionButton,
     maximized: bool,
+    title: String,
+    status: String,
+    message: String,
+    image: Option<RenderedImage>,
+}
+
+struct RenderedImage {
+    bitmap: ID2D1Bitmap1,
+    width: u32,
+    height: u32,
 }
 
 impl Renderer {
@@ -154,6 +167,10 @@ impl Renderer {
             height_px,
             caption_hot: CaptionButton::None,
             maximized: false,
+            title: "PurePic".to_owned(),
+            status: "— × —     0 B".to_owned(),
+            message: "Open an image to begin".to_owned(),
+            image: None,
         };
         renderer.create_target()?;
         Ok(renderer)
@@ -192,24 +209,47 @@ impl Renderer {
             self.context
                 .FillRectangle(&to_d2d_rect(layout.status_bar), &self.status_brush);
 
+            if let Some(image) = &self.image {
+                let scale = (layout.canvas.width / image.width as f32)
+                    .min(layout.canvas.height / image.height as f32);
+                let width = image.width as f32 * scale;
+                let height = image.height as f32 * scale;
+                let destination = RectF::new(
+                    layout.canvas.x + (layout.canvas.width - width) * 0.5,
+                    layout.canvas.y + (layout.canvas.height - height) * 0.5,
+                    width,
+                    height,
+                );
+                self.context.DrawBitmap(
+                    &image.bitmap,
+                    Some(&to_d2d_rect(destination)),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_LINEAR,
+                    None,
+                    None,
+                );
+            }
+
             draw_text(
                 &self.context,
-                "PurePic",
+                &self.title,
                 &self.title_format,
                 layout.title_bar,
                 &self.primary_text_brush,
             );
             self.draw_caption_buttons(layout.title_bar);
+            if !self.message.is_empty() {
+                draw_text(
+                    &self.context,
+                    &self.message,
+                    &self.message_format,
+                    canvas_center,
+                    &self.muted_text_brush,
+                );
+            }
             draw_text(
                 &self.context,
-                "Open an image to begin",
-                &self.message_format,
-                canvas_center,
-                &self.muted_text_brush,
-            );
-            draw_text(
-                &self.context,
-                "— × —     0 B",
+                &self.status,
                 &self.status_format,
                 status_left,
                 &self.secondary_text_brush,
@@ -267,6 +307,59 @@ impl Renderer {
 
     pub fn set_maximized(&mut self, maximized: bool) {
         self.maximized = maximized;
+    }
+
+    pub fn set_loading(&mut self, path: &std::path::Path) {
+        self.title = display_file_name(path);
+        self.message = "Loading image…".to_owned();
+        self.status = "Reading metadata…".to_owned();
+        self.image = None;
+    }
+
+    pub fn set_image(&mut self, image: DecodedImage) -> Result<()> {
+        let properties = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+            ..Default::default()
+        };
+        let bitmap = unsafe {
+            self.context.CreateBitmap(
+                D2D_SIZE_U {
+                    width: image.width,
+                    height: image.height,
+                },
+                Some(image.pixels.as_ptr().cast()),
+                image.stride,
+                &properties,
+            )?
+        };
+
+        self.title = image.file_name;
+        self.status = format!(
+            "{} × {}     {}",
+            image.original_width,
+            image.original_height,
+            format_file_size(image.file_size)
+        );
+        self.message.clear();
+        self.image = Some(RenderedImage {
+            bitmap,
+            width: image.width,
+            height: image.height,
+        });
+        Ok(())
+    }
+
+    pub fn set_image_error(&mut self, path: &std::path::Path, error: &str) {
+        self.title = display_file_name(path);
+        self.status = "Unable to open image".to_owned();
+        self.message = error.to_owned();
+        self.image = None;
     }
 
     fn create_target(&mut self) -> Result<()> {
@@ -447,5 +540,23 @@ fn to_d2d_rect(rect: RectF) -> D2D_RECT_F {
         top: rect.y,
         right: rect.right(),
         bottom: rect.bottom(),
+    }
+}
+
+fn display_file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn format_file_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / MIB)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / KIB)
+    } else {
+        format!("{bytes} B")
     }
 }
