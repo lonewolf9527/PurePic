@@ -1,5 +1,6 @@
 use std::mem::size_of;
 
+use purepic::ui::layout::TITLE_BAR_HEIGHT_DIP;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -14,7 +15,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, Result};
 
-const TITLE_HEIGHT_DIP: i32 = 48;
 const CAPTION_BUTTON_WIDTH_DIP: i32 = 46;
 
 pub fn apply_dwm_attributes(hwnd: HWND) -> Result<()> {
@@ -84,7 +84,7 @@ pub fn non_client_hit_test(hwnd: HWND, lparam: LPARAM) -> u32 {
         }
     }
 
-    let title_height = scale_dip(TITLE_HEIGHT_DIP, dpi);
+    let title_height = scale_dip(TITLE_BAR_HEIGHT_DIP as i32, dpi);
     if y < 0 || y >= title_height {
         return HTCLIENT;
     }

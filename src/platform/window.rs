@@ -43,6 +43,7 @@ struct WindowState {
     image_receiver: Receiver<ImageLoadResult>,
     requested_path: Option<PathBuf>,
     slider_dragging: bool,
+    image_dragging: bool,
     fullscreen: bool,
     windowed_placement: Option<WINDOWPLACEMENT>,
 }
@@ -122,6 +123,7 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
         image_receiver,
         requested_path: image_path.clone(),
         slider_dragging: false,
+        image_dragging: false,
         fullscreen: false,
         windowed_placement: None,
     });
@@ -192,6 +194,10 @@ unsafe extern "system" fn window_proc(
                         state.slider_dragging = true;
                         unsafe { SetCapture(hwnd) };
                     }
+                    PointerAction::BeginPan => {
+                        state.image_dragging = true;
+                        unsafe { SetCapture(hwnd) };
+                    }
                     PointerAction::ToggleFullscreen => {
                         fullscreen_request = Some(!state.fullscreen);
                     }
@@ -205,21 +211,29 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            if let Some(state) = unsafe { state_mut(hwnd) }
-                && state.slider_dragging
-            {
-                state
-                    .renderer
-                    .pointer_move_slider(signed_low_word(lparam.0));
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                if state.slider_dragging {
+                    state
+                        .renderer
+                        .pointer_move_slider(signed_low_word(lparam.0));
+                } else if state.image_dragging {
+                    state
+                        .renderer
+                        .pointer_move_pan(signed_low_word(lparam.0), signed_high_word(lparam.0));
+                } else {
+                    return LRESULT(0);
+                }
                 let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
             if let Some(state) = unsafe { state_mut(hwnd) }
-                && state.slider_dragging
+                && (state.slider_dragging || state.image_dragging)
             {
                 state.slider_dragging = false;
+                state.image_dragging = false;
+                state.renderer.end_pan();
                 let _ = unsafe { ReleaseCapture() };
             }
             LRESULT(0)

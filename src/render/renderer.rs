@@ -3,7 +3,7 @@ use crate::render::icons::IconSet;
 use purepic::ui::chrome::CaptionButton;
 use purepic::ui::controls::{StatusControl, StatusControlsLayout};
 use purepic::ui::icon::Icon;
-use purepic::ui::layout::{LayoutInput, RectF, compute_layout};
+use purepic::ui::layout::{LayoutInput, RectF, WindowLayout, compute_layout};
 use purepic::ui::zoom::{
     MAX_ZOOM, MIN_ZOOM, SizeF, fit_zoom, slider_to_zoom, step_zoom, zoom_to_slider,
 };
@@ -91,6 +91,9 @@ pub struct Renderer {
     fit_mode: bool,
     zoom_menu_open: bool,
     fullscreen: bool,
+    pan_x: f32,
+    pan_y: f32,
+    pan_last_position: Option<(f32, f32)>,
 }
 
 struct RenderedImage {
@@ -104,6 +107,7 @@ pub enum PointerAction {
     #[default]
     None,
     BeginSlider,
+    BeginPan,
     ToggleFullscreen,
 }
 
@@ -200,6 +204,9 @@ impl Renderer {
             fit_mode: true,
             zoom_menu_open: false,
             fullscreen: false,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            pan_last_position: None,
         };
         renderer.create_target()?;
         Ok(renderer)
@@ -210,10 +217,7 @@ impl Renderer {
             return Ok(());
         }
 
-        let mut layout = compute_layout(LayoutInput::new(self.width_px, self.height_px, self.dpi));
-        if self.fullscreen {
-            layout.canvas = layout.client;
-        }
+        let layout = self.current_layout();
         let canvas_center = RectF::new(
             layout.canvas.x,
             layout.canvas.y + layout.canvas.height * 0.5 - 24.0,
@@ -233,24 +237,16 @@ impl Renderer {
             self.context.Clear(Some(&BACKGROUND));
 
             if let Some(image) = &self.image {
-                let zoom = self.current_zoom(layout.canvas);
-                let dip_per_pixel = 96.0 / self.dpi as f32;
-                let width = image.width as f32 * zoom * dip_per_pixel;
-                let height = image.height as f32 * zoom * dip_per_pixel;
-                let destination = RectF::new(
-                    layout.canvas.x + (layout.canvas.width - width) * 0.5,
-                    layout.canvas.y + (layout.canvas.height - height) * 0.5,
-                    width,
-                    height,
-                );
-                self.context.DrawBitmap(
-                    &image.bitmap,
-                    Some(&to_d2d_rect(destination)),
-                    1.0,
-                    D2D1_INTERPOLATION_MODE_LINEAR,
-                    None,
-                    None,
-                );
+                if let Some(destination) = self.image_destination(layout.canvas) {
+                    self.context.DrawBitmap(
+                        &image.bitmap,
+                        Some(&to_d2d_rect(destination)),
+                        1.0,
+                        D2D1_INTERPOLATION_MODE_LINEAR,
+                        None,
+                        None,
+                    );
+                }
             }
 
             if !self.message.is_empty() {
@@ -347,11 +343,11 @@ impl Renderer {
     }
 
     pub fn pointer_down(&mut self, x_px: i32, y_px: i32) -> PointerAction {
-        if self.fullscreen {
-            return PointerAction::None;
-        }
         let (x, y) = self.point_to_dip(x_px, y_px);
-        let layout = compute_layout(LayoutInput::new(self.width_px, self.height_px, self.dpi));
+        let layout = self.current_layout();
+        if self.fullscreen {
+            return self.begin_pan(x, y, layout.canvas);
+        }
         let controls = StatusControlsLayout::compute(layout.status_bar);
 
         if self.zoom_menu_open {
@@ -382,15 +378,30 @@ impl Renderer {
                 self.fit_mode = false;
             }
             Some(StatusControl::Fullscreen) => return PointerAction::ToggleFullscreen,
-            None => {}
+            None => return self.begin_pan(x, y, layout.canvas),
         }
         PointerAction::None
     }
 
     pub fn pointer_move_slider(&mut self, x_px: i32) {
         let (x, _) = self.point_to_dip(x_px, 0);
-        let layout = compute_layout(LayoutInput::new(self.width_px, self.height_px, self.dpi));
+        let layout = self.current_layout();
         self.set_slider_from_x(StatusControlsLayout::compute(layout.status_bar).slider, x);
+    }
+
+    pub fn pointer_move_pan(&mut self, x_px: i32, y_px: i32) {
+        let (x, y) = self.point_to_dip(x_px, y_px);
+        let Some((last_x, last_y)) = self.pan_last_position else {
+            return;
+        };
+        self.pan_x += x - last_x;
+        self.pan_y += y - last_y;
+        self.pan_last_position = Some((x, y));
+        self.constrain_pan();
+    }
+
+    pub fn end_pan(&mut self) {
+        self.pan_last_position = None;
     }
 
     pub fn set_loading(&mut self, path: &std::path::Path) {
@@ -440,6 +451,9 @@ impl Renderer {
             height: image.original_height,
         });
         self.fit_mode = true;
+        self.pan_x = 0.0;
+        self.pan_y = 0.0;
+        self.pan_last_position = None;
         Ok(())
     }
 
@@ -666,6 +680,65 @@ impl Renderer {
             SizeF::new(image.width as f64, image.height as f64),
             SizeF::new(canvas.width as f64 * scale, canvas.height as f64 * scale),
         ) as f32
+    }
+
+    fn current_layout(&self) -> WindowLayout {
+        let mut layout = compute_layout(LayoutInput::new(self.width_px, self.height_px, self.dpi));
+        if self.fullscreen {
+            layout.canvas = layout.client;
+        }
+        layout
+    }
+
+    fn image_destination(&self, canvas: RectF) -> Option<RectF> {
+        let (width, height) = self.image_size(canvas)?;
+        let (pan_x, pan_y) = self.constrained_pan_for(canvas, width, height);
+        Some(RectF::new(
+            canvas.x + (canvas.width - width) * 0.5 + pan_x,
+            canvas.y + (canvas.height - height) * 0.5 + pan_y,
+            width,
+            height,
+        ))
+    }
+
+    fn image_size(&self, canvas: RectF) -> Option<(f32, f32)> {
+        let image = self.image.as_ref()?;
+        let zoom = self.current_zoom(canvas);
+        let dip_per_pixel = 96.0 / self.dpi as f32;
+        Some((
+            image.width as f32 * zoom * dip_per_pixel,
+            image.height as f32 * zoom * dip_per_pixel,
+        ))
+    }
+
+    fn begin_pan(&mut self, x: f32, y: f32, canvas: RectF) -> PointerAction {
+        let Some((width, height)) = self.image_size(canvas) else {
+            return PointerAction::None;
+        };
+        if width <= canvas.width && height <= canvas.height {
+            return PointerAction::None;
+        }
+        self.pan_last_position = Some((x, y));
+        PointerAction::BeginPan
+    }
+
+    fn constrain_pan(&mut self) {
+        let canvas = self.current_layout().canvas;
+        let Some((width, height)) = self.image_size(canvas) else {
+            self.pan_x = 0.0;
+            self.pan_y = 0.0;
+            return;
+        };
+        (self.pan_x, self.pan_y) = self.constrained_pan_for(canvas, width, height);
+    }
+
+    fn constrained_pan_for(&self, canvas: RectF, width: f32, height: f32) -> (f32, f32) {
+        let max_x = ((width - canvas.width) * 0.5).max(0.0);
+        let max_y = ((height - canvas.height) * 0.5).max(0.0);
+        (
+            self.pan_x.clamp(-max_x, max_x),
+            self.pan_y.clamp(-max_y, max_y),
+        )
     }
 
     fn point_to_dip(&self, x: i32, y: i32) -> (f32, f32) {
