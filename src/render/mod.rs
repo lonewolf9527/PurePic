@@ -1,3 +1,4 @@
+mod icons;
 mod renderer;
 
-pub use renderer::Renderer;
+pub use renderer::{PointerAction, Renderer};

@@ -1,6 +1,12 @@
 use crate::image::DecodedImage;
+use crate::render::icons::IconSet;
 use purepic::ui::chrome::CaptionButton;
+use purepic::ui::controls::{StatusControl, StatusControlsLayout};
+use purepic::ui::icon::Icon;
 use purepic::ui::layout::{LayoutInput, RectF, compute_layout};
+use purepic::ui::zoom::{
+    MAX_ZOOM, MIN_ZOOM, SizeF, fit_zoom, slider_to_zoom, step_zoom, zoom_to_slider,
+};
 use windows::Win32::Foundation::{E_FAIL, HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
@@ -11,7 +17,7 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_LINEAR,
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image,
-    ID2D1SolidColorBrush,
+    ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
@@ -20,8 +26,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
@@ -32,6 +38,7 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGIOutput, IDXGISurface, IDXGISwapChain1,
 };
 use windows::core::{Error, Interface, Result, w};
+use windows_numerics::Vector2;
 
 const BACKGROUND: D2D1_COLOR_F = color(0x0F, 0x14, 0x17);
 const TITLE_BACKGROUND: D2D1_COLOR_F = color(0x18, 0x20, 0x24);
@@ -41,6 +48,7 @@ const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
 const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
 const CAPTION_HOVER: D2D1_COLOR_F = color(0x31, 0x3A, 0x3F);
 const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
+const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -65,9 +73,9 @@ pub struct Renderer {
     muted_text_brush: ID2D1SolidColorBrush,
     caption_hover_brush: ID2D1SolidColorBrush,
     caption_close_hover_brush: ID2D1SolidColorBrush,
+    accent_brush: ID2D1SolidColorBrush,
     title_format: IDWriteTextFormat,
     status_format: IDWriteTextFormat,
-    controls_format: IDWriteTextFormat,
     message_format: IDWriteTextFormat,
     dpi: u32,
     width_px: u32,
@@ -78,12 +86,25 @@ pub struct Renderer {
     status: String,
     message: String,
     image: Option<RenderedImage>,
+    icons: IconSet,
+    zoom: f32,
+    fit_mode: bool,
+    zoom_menu_open: bool,
+    fullscreen: bool,
 }
 
 struct RenderedImage {
     bitmap: ID2D1Bitmap1,
     width: u32,
     height: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PointerAction {
+    #[default]
+    None,
+    BeginSlider,
+    ToggleFullscreen,
 }
 
 impl Renderer {
@@ -134,8 +155,6 @@ impl Renderer {
         let title_format = create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
         let status_format =
             create_text_format(&write_factory, 13.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
-        let controls_format =
-            create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
         let message_format =
             create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
 
@@ -147,6 +166,7 @@ impl Renderer {
         let caption_hover_brush = unsafe { context.CreateSolidColorBrush(&CAPTION_HOVER, None)? };
         let caption_close_hover_brush =
             unsafe { context.CreateSolidColorBrush(&CAPTION_CLOSE_HOVER, None)? };
+        let accent_brush = unsafe { context.CreateSolidColorBrush(&ACCENT, None)? };
 
         let mut renderer = Self {
             _d3d_device: d3d_device,
@@ -162,9 +182,9 @@ impl Renderer {
             muted_text_brush,
             caption_hover_brush,
             caption_close_hover_brush,
+            accent_brush,
             title_format,
             status_format,
-            controls_format,
             message_format,
             dpi: dpi.max(1),
             width_px,
@@ -175,6 +195,11 @@ impl Renderer {
             status: "— × —     0 B".to_owned(),
             message: "Open an image to begin".to_owned(),
             image: None,
+            icons: IconSet::load(),
+            zoom: 1.0,
+            fit_mode: true,
+            zoom_menu_open: false,
+            fullscreen: false,
         };
         renderer.create_target()?;
         Ok(renderer)
@@ -185,7 +210,10 @@ impl Renderer {
             return Ok(());
         }
 
-        let layout = compute_layout(LayoutInput::new(self.width_px, self.height_px, self.dpi));
+        let mut layout = compute_layout(LayoutInput::new(self.width_px, self.height_px, self.dpi));
+        if self.fullscreen {
+            layout.canvas = layout.client;
+        }
         let canvas_center = RectF::new(
             layout.canvas.x,
             layout.canvas.y + layout.canvas.height * 0.5 - 24.0,
@@ -198,28 +226,23 @@ impl Renderer {
             (layout.status_bar.width - 440.0).max(0.0),
             layout.status_bar.height,
         );
-        let controls_right = (layout.status_bar.right() - 18.0).max(0.0);
-        let controls_left = (controls_right - 520.0).max(0.0);
-        let status_right = RectF::new(
-            controls_left,
-            layout.status_bar.y,
-            controls_right - controls_left,
-            layout.status_bar.height,
-        );
+        let controls = StatusControlsLayout::compute(layout.status_bar);
 
         unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&BACKGROUND));
-            self.context
-                .FillRectangle(&to_d2d_rect(layout.title_bar), &self.title_brush);
-            self.context
-                .FillRectangle(&to_d2d_rect(layout.status_bar), &self.status_brush);
+            if !self.fullscreen {
+                self.context
+                    .FillRectangle(&to_d2d_rect(layout.title_bar), &self.title_brush);
+                self.context
+                    .FillRectangle(&to_d2d_rect(layout.status_bar), &self.status_brush);
+            }
 
             if let Some(image) = &self.image {
-                let scale = (layout.canvas.width / image.width as f32)
-                    .min(layout.canvas.height / image.height as f32);
-                let width = image.width as f32 * scale;
-                let height = image.height as f32 * scale;
+                let zoom = self.current_zoom(layout.canvas);
+                let dip_per_pixel = 96.0 / self.dpi as f32;
+                let width = image.width as f32 * zoom * dip_per_pixel;
+                let height = image.height as f32 * zoom * dip_per_pixel;
                 let destination = RectF::new(
                     layout.canvas.x + (layout.canvas.width - width) * 0.5,
                     layout.canvas.y + (layout.canvas.height - height) * 0.5,
@@ -236,14 +259,6 @@ impl Renderer {
                 );
             }
 
-            draw_text(
-                &self.context,
-                &self.title,
-                &self.title_format,
-                layout.title_bar,
-                &self.primary_text_brush,
-            );
-            self.draw_caption_buttons(layout.title_bar);
             if !self.message.is_empty() {
                 draw_text(
                     &self.context,
@@ -253,20 +268,27 @@ impl Renderer {
                     &self.muted_text_brush,
                 );
             }
-            draw_text(
-                &self.context,
-                &self.status,
-                &self.status_format,
-                status_left,
-                &self.secondary_text_brush,
-            );
-            draw_text(
-                &self.context,
-                "1:1    100%    −   ━━●━━   +    ⛶",
-                &self.controls_format,
-                status_right,
-                &self.primary_text_brush,
-            );
+            if !self.fullscreen {
+                draw_text(
+                    &self.context,
+                    &self.title,
+                    &self.title_format,
+                    layout.title_bar,
+                    &self.primary_text_brush,
+                );
+                self.draw_caption_buttons(layout.title_bar);
+                draw_text(
+                    &self.context,
+                    &self.status,
+                    &self.status_format,
+                    status_left,
+                    &self.secondary_text_brush,
+                );
+                self.draw_status_controls(controls, layout.canvas);
+                if self.zoom_menu_open {
+                    self.draw_zoom_menu(controls.zoom_menu, layout.canvas);
+                }
+            }
 
             self.context.EndDraw(None, None)?;
             self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()?;
@@ -315,6 +337,62 @@ impl Renderer {
         self.maximized = maximized;
     }
 
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        self.fullscreen = fullscreen;
+        self.zoom_menu_open = false;
+    }
+
+    pub fn close_zoom_menu(&mut self) -> bool {
+        std::mem::take(&mut self.zoom_menu_open)
+    }
+
+    pub fn pointer_down(&mut self, x_px: i32, y_px: i32) -> PointerAction {
+        if self.fullscreen {
+            return PointerAction::None;
+        }
+        let (x, y) = self.point_to_dip(x_px, y_px);
+        let layout = compute_layout(LayoutInput::new(self.width_px, self.height_px, self.dpi));
+        let controls = StatusControlsLayout::compute(layout.status_bar);
+
+        if self.zoom_menu_open {
+            if let Some(choice) = zoom_choice_at(self.zoom_menu_rect(controls.zoom_menu), x, y) {
+                self.apply_zoom_choice(choice);
+                self.zoom_menu_open = false;
+                return PointerAction::None;
+            }
+            self.zoom_menu_open = false;
+        }
+
+        match controls.hit_test(x, y) {
+            Some(StatusControl::ActualSize) => {
+                self.fit_mode = false;
+                self.zoom = 1.0;
+            }
+            Some(StatusControl::ZoomMenu) => self.zoom_menu_open = true,
+            Some(StatusControl::ZoomOut) => {
+                self.zoom = step_zoom(self.current_zoom(layout.canvas) as f64, -1) as f32;
+                self.fit_mode = false;
+            }
+            Some(StatusControl::Slider) => {
+                self.set_slider_from_x(controls.slider, x);
+                return PointerAction::BeginSlider;
+            }
+            Some(StatusControl::ZoomIn) => {
+                self.zoom = step_zoom(self.current_zoom(layout.canvas) as f64, 1) as f32;
+                self.fit_mode = false;
+            }
+            Some(StatusControl::Fullscreen) => return PointerAction::ToggleFullscreen,
+            None => {}
+        }
+        PointerAction::None
+    }
+
+    pub fn pointer_move_slider(&mut self, x_px: i32) {
+        let (x, _) = self.point_to_dip(x_px, 0);
+        let layout = compute_layout(LayoutInput::new(self.width_px, self.height_px, self.dpi));
+        self.set_slider_from_x(StatusControlsLayout::compute(layout.status_bar).slider, x);
+    }
+
     pub fn set_loading(&mut self, path: &std::path::Path) {
         self.title = display_file_name(path);
         self.message = "Loading image…".to_owned();
@@ -358,9 +436,10 @@ impl Renderer {
         self.message.clear();
         self.image = Some(RenderedImage {
             bitmap,
-            width: image.width,
-            height: image.height,
+            width: image.original_width,
+            height: image.original_height,
         });
+        self.fit_mode = true;
         Ok(())
     }
 
@@ -439,26 +518,272 @@ impl Renderer {
         }
 
         unsafe {
-            draw_text(
+            draw_icon(
                 &self.context,
-                "—",
-                &self.title_format,
-                minimize,
+                &self.icons.window_minimize,
+                inset(minimize, 10.0),
                 &self.primary_text_brush,
+                1.6,
+            );
+            draw_icon(
+                &self.context,
+                if self.maximized {
+                    &self.icons.window_restore
+                } else {
+                    &self.icons.window_maximize
+                },
+                inset(maximize, 10.0),
+                &self.primary_text_brush,
+                1.6,
+            );
+            draw_icon(
+                &self.context,
+                &self.icons.window_close,
+                inset(close, 10.0),
+                &self.primary_text_brush,
+                1.6,
+            );
+        }
+    }
+
+    unsafe fn draw_status_controls(&self, controls: StatusControlsLayout, canvas: RectF) {
+        let icon_inset = 8.0;
+        unsafe {
+            draw_icon(
+                &self.context,
+                &self.icons.actual_size,
+                inset(controls.actual_size, icon_inset),
+                &self.primary_text_brush,
+                1.7,
+            );
+            self.context
+                .FillRectangle(&to_d2d_rect(controls.zoom_menu), &self.caption_hover_brush);
+            let label_rect = RectF::new(
+                controls.zoom_menu.x + 5.0,
+                controls.zoom_menu.y,
+                controls.zoom_menu.width - 24.0,
+                controls.zoom_menu.height,
             );
             draw_text(
                 &self.context,
-                if self.maximized { "❐" } else { "□" },
+                &format!("{:.0}%", self.current_zoom(canvas) * 100.0),
                 &self.title_format,
-                maximize,
+                label_rect,
                 &self.primary_text_brush,
             );
-            draw_text(
+            let chevron_rect = RectF::new(
+                controls.zoom_menu.right() - 20.0,
+                controls.zoom_menu.y + 10.0,
+                12.0,
+                16.0,
+            );
+            draw_icon(
                 &self.context,
-                "×",
-                &self.title_format,
-                close,
+                &self.icons.chevron_down,
+                chevron_rect,
                 &self.primary_text_brush,
+                1.6,
+            );
+            draw_icon(
+                &self.context,
+                &self.icons.zoom_out,
+                inset(controls.zoom_out, icon_inset),
+                &self.primary_text_brush,
+                1.7,
+            );
+            draw_icon(
+                &self.context,
+                &self.icons.zoom_in,
+                inset(controls.zoom_in, icon_inset),
+                &self.primary_text_brush,
+                1.7,
+            );
+            draw_icon(
+                &self.context,
+                &self.icons.fullscreen,
+                inset(controls.fullscreen, icon_inset),
+                &self.primary_text_brush,
+                1.7,
+            );
+
+            let track = RectF::new(
+                controls.slider.x + 10.0,
+                controls.slider.y + 17.0,
+                controls.slider.width - 20.0,
+                2.0,
+            );
+            self.context
+                .FillRectangle(&to_d2d_rect(track), &self.muted_text_brush);
+            let position = zoom_to_slider(self.current_zoom(canvas) as f64) as f32;
+            let filled = RectF::new(track.x, track.y, track.width * position, track.height);
+            self.context
+                .FillRectangle(&to_d2d_rect(filled), &self.accent_brush);
+            let knob_x = track.x + track.width * position;
+            let knob = RectF::new(knob_x - 4.0, controls.slider.y + 9.0, 8.0, 18.0);
+            self.context
+                .FillRectangle(&to_d2d_rect(knob), &self.primary_text_brush);
+        }
+    }
+
+    unsafe fn draw_zoom_menu(&self, button: RectF, canvas: RectF) {
+        let menu = self.zoom_menu_rect(button);
+        unsafe {
+            self.context
+                .FillRectangle(&to_d2d_rect(menu), &self.title_brush)
+        };
+        let current = self.current_zoom(canvas);
+        for (index, choice) in ZOOM_CHOICES.iter().copied().enumerate() {
+            let row = RectF::new(menu.x, menu.y + index as f32 * 30.0, menu.width, 30.0);
+            let selected = match choice {
+                ZoomChoice::Fit => self.fit_mode,
+                ZoomChoice::Percent(value) => !self.fit_mode && (current - value).abs() < 0.001,
+            };
+            if selected {
+                unsafe {
+                    self.context
+                        .FillRectangle(&to_d2d_rect(row), &self.caption_hover_brush)
+                };
+            }
+            unsafe {
+                draw_text(
+                    &self.context,
+                    zoom_choice_label(choice),
+                    &self.title_format,
+                    row,
+                    &self.primary_text_brush,
+                )
+            };
+        }
+    }
+
+    fn current_zoom(&self, canvas: RectF) -> f32 {
+        if !self.fit_mode {
+            return self.zoom.clamp(MIN_ZOOM as f32, MAX_ZOOM as f32);
+        }
+        let Some(image) = &self.image else { return 1.0 };
+        let scale = self.dpi as f64 / 96.0;
+        fit_zoom(
+            SizeF::new(image.width as f64, image.height as f64),
+            SizeF::new(canvas.width as f64 * scale, canvas.height as f64 * scale),
+        ) as f32
+    }
+
+    fn point_to_dip(&self, x: i32, y: i32) -> (f32, f32) {
+        let scale = 96.0 / self.dpi as f32;
+        (x as f32 * scale, y as f32 * scale)
+    }
+
+    fn set_slider_from_x(&mut self, slider: RectF, x: f32) {
+        let track_left = slider.x + 10.0;
+        let track_width = (slider.width - 20.0).max(1.0);
+        let position = ((x - track_left) / track_width).clamp(0.0, 1.0);
+        self.zoom = slider_to_zoom(position as f64) as f32;
+        self.fit_mode = false;
+        self.zoom_menu_open = false;
+    }
+
+    fn zoom_menu_rect(&self, button: RectF) -> RectF {
+        let height = ZOOM_CHOICES.len() as f32 * 30.0;
+        RectF::new(
+            button.right() - 128.0,
+            button.y - height - 6.0,
+            128.0,
+            height,
+        )
+    }
+
+    fn apply_zoom_choice(&mut self, choice: ZoomChoice) {
+        match choice {
+            ZoomChoice::Fit => self.fit_mode = true,
+            ZoomChoice::Percent(value) => {
+                self.zoom = value;
+                self.fit_mode = false;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ZoomChoice {
+    Fit,
+    Percent(f32),
+}
+
+const ZOOM_CHOICES: [ZoomChoice; 11] = [
+    ZoomChoice::Fit,
+    ZoomChoice::Percent(0.10),
+    ZoomChoice::Percent(0.25),
+    ZoomChoice::Percent(0.50),
+    ZoomChoice::Percent(0.75),
+    ZoomChoice::Percent(1.00),
+    ZoomChoice::Percent(1.50),
+    ZoomChoice::Percent(2.00),
+    ZoomChoice::Percent(4.00),
+    ZoomChoice::Percent(8.00),
+    ZoomChoice::Percent(16.00),
+];
+
+fn zoom_choice_label(choice: ZoomChoice) -> &'static str {
+    match choice {
+        ZoomChoice::Fit => "适应窗口",
+        ZoomChoice::Percent(0.10) => "10%",
+        ZoomChoice::Percent(0.25) => "25%",
+        ZoomChoice::Percent(0.50) => "50%",
+        ZoomChoice::Percent(0.75) => "75%",
+        ZoomChoice::Percent(1.00) => "100%",
+        ZoomChoice::Percent(1.50) => "150%",
+        ZoomChoice::Percent(2.00) => "200%",
+        ZoomChoice::Percent(4.00) => "400%",
+        ZoomChoice::Percent(8.00) => "800%",
+        ZoomChoice::Percent(16.00) => "1600%",
+        ZoomChoice::Percent(_) => "自定义",
+    }
+}
+
+fn zoom_choice_at(menu: RectF, x: f32, y: f32) -> Option<ZoomChoice> {
+    if !menu.contains(x, y) {
+        return None;
+    }
+    let index = ((y - menu.y) / 30.0).floor() as usize;
+    ZOOM_CHOICES.get(index).copied()
+}
+
+fn inset(rect: RectF, amount: f32) -> RectF {
+    RectF::new(
+        rect.x + amount,
+        rect.y + amount,
+        (rect.width - amount * 2.0).max(0.0),
+        (rect.height - amount * 2.0).max(0.0),
+    )
+}
+
+unsafe fn draw_icon(
+    context: &ID2D1DeviceContext,
+    icon: &Icon,
+    target: RectF,
+    brush: &ID2D1SolidColorBrush,
+    stroke_width: f32,
+) {
+    if icon.width <= 0.0 || icon.height <= 0.0 || icon.segments.is_empty() {
+        return;
+    }
+    let scale = (target.width / icon.width).min(target.height / icon.height);
+    let origin_x = target.x + (target.width - icon.width * scale) * 0.5;
+    let origin_y = target.y + (target.height - icon.height * scale) * 0.5;
+    for segment in &icon.segments {
+        unsafe {
+            context.DrawLine(
+                Vector2 {
+                    X: origin_x + segment.start.x * scale,
+                    Y: origin_y + segment.start.y * scale,
+                },
+                Vector2 {
+                    X: origin_x + segment.end.x * scale,
+                    Y: origin_y + segment.end.y * scale,
+                },
+                brush,
+                stroke_width,
+                None::<&ID2D1StrokeStyle>,
             );
         }
     }

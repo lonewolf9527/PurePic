@@ -11,6 +11,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", manifest.display());
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=Assets/icons");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -32,6 +33,25 @@ fn main() {
     embed_resource::compile(&resource_path, embed_resource::NONE)
         .manifest_required()
         .expect("failed to embed PurePic icon");
+
+    copy_runtime_assets(&project_dir).expect("failed to copy PurePic runtime assets");
+}
+
+fn copy_runtime_assets(project_dir: &Path) -> io::Result<()> {
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_owned());
+    let target_dir = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_dir.join("target"));
+    let source = project_dir.join("Assets").join("icons");
+    let destination = target_dir.join(profile).join("Assets").join("icons");
+    fs::create_dir_all(&destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            fs::copy(entry.path(), destination.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 fn write_icon(path: &Path) -> io::Result<()> {
