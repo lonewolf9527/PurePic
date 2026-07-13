@@ -1,6 +1,8 @@
 use std::mem::size_of;
 
+use crate::platform::chrome::{apply_dwm_attributes, non_client_hit_test};
 use crate::render::Renderer;
+use purepic::ui::chrome::CaptionButton;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT, UpdateWindow,
@@ -9,13 +11,17 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-    DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW, IDC_ARROW,
-    LoadCursorW, MSG, PostQuitMessage, RegisterClassExW, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_DESTROY,
-    WM_DPICHANGED, WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSEXW,
-    WS_OVERLAPPEDWINDOW,
+    DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW, HTCLOSE,
+    HTMAXBUTTON, HTMINBUTTON, IDC_ARROW, IsZoomed, LoadCursorW, MSG, PostQuitMessage,
+    RegisterClassExW, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
+    WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCMOUSELEAVE,
+    WM_NCMOUSEMOVE, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{Error, Result, w};
 
@@ -53,7 +59,7 @@ pub fn run() -> Result<()> {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class_name,
-            w!(""),
+            w!("PurePic"),
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -66,6 +72,18 @@ pub fn run() -> Result<()> {
         )?
     };
 
+    apply_dwm_attributes(hwnd)?;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )?;
+    }
     let mut client = RECT::default();
     unsafe { GetClientRect(hwnd, &mut client)? };
     let state = Box::new(WindowState {
@@ -123,10 +141,45 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_NCCALCSIZE => {
+            if wparam.0 != 0 {
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_NCHITTEST => {
+            LRESULT(non_client_hit_test(hwnd, lparam) as isize)
+        }
+        WM_NCMOUSEMOVE => {
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                state
+                    .renderer
+                    .set_caption_hot(caption_button_from_hit(wparam.0 as u32));
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            }
+            let mut tracking = TRACKMOUSEEVENT {
+                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE | TME_NONCLIENT,
+                hwndTrack: hwnd,
+                ..Default::default()
+            };
+            let _ = unsafe { TrackMouseEvent(&mut tracking) };
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+        WM_NCMOUSELEAVE => {
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                state.renderer.set_caption_hot(CaptionButton::None);
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             let width = (lparam.0 as u32 & 0xFFFF) as u32;
             let height = ((lparam.0 as u32 >> 16) & 0xFFFF) as u32;
             if let Some(state) = unsafe { state_mut(hwnd) } {
+                state
+                    .renderer
+                    .set_maximized(unsafe { IsZoomed(hwnd) }.as_bool());
                 let _ = state.renderer.resize(width, height);
             }
             LRESULT(0)
@@ -168,4 +221,13 @@ unsafe extern "system" fn window_proc(
 unsafe fn state_mut(hwnd: HWND) -> Option<&'static mut WindowState> {
     let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut WindowState;
     unsafe { pointer.as_mut() }
+}
+
+fn caption_button_from_hit(hit: u32) -> CaptionButton {
+    match hit {
+        HTMINBUTTON => CaptionButton::Minimize,
+        HTMAXBUTTON => CaptionButton::Maximize,
+        HTCLOSE => CaptionButton::Close,
+        _ => CaptionButton::None,
+    }
 }

@@ -1,3 +1,4 @@
+use purepic::ui::chrome::CaptionButton;
 use purepic::ui::layout::{LayoutInput, RectF, compute_layout};
 use windows::Win32::Foundation::{E_FAIL, HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -35,6 +36,8 @@ const STATUS_BACKGROUND: D2D1_COLOR_F = color(0x1B, 0x23, 0x27);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
 const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
 const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
+const CAPTION_HOVER: D2D1_COLOR_F = color(0x31, 0x3A, 0x3F);
+const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -57,12 +60,16 @@ pub struct Renderer {
     primary_text_brush: ID2D1SolidColorBrush,
     secondary_text_brush: ID2D1SolidColorBrush,
     muted_text_brush: ID2D1SolidColorBrush,
+    caption_hover_brush: ID2D1SolidColorBrush,
+    caption_close_hover_brush: ID2D1SolidColorBrush,
     title_format: IDWriteTextFormat,
     status_format: IDWriteTextFormat,
     message_format: IDWriteTextFormat,
     dpi: u32,
     width_px: u32,
     height_px: u32,
+    caption_hot: CaptionButton,
+    maximized: bool,
 }
 
 impl Renderer {
@@ -121,6 +128,9 @@ impl Renderer {
         let primary_text_brush = unsafe { context.CreateSolidColorBrush(&PRIMARY_TEXT, None)? };
         let secondary_text_brush = unsafe { context.CreateSolidColorBrush(&SECONDARY_TEXT, None)? };
         let muted_text_brush = unsafe { context.CreateSolidColorBrush(&MUTED_TEXT, None)? };
+        let caption_hover_brush = unsafe { context.CreateSolidColorBrush(&CAPTION_HOVER, None)? };
+        let caption_close_hover_brush =
+            unsafe { context.CreateSolidColorBrush(&CAPTION_CLOSE_HOVER, None)? };
 
         let mut renderer = Self {
             _d3d_device: d3d_device,
@@ -134,12 +144,16 @@ impl Renderer {
             primary_text_brush,
             secondary_text_brush,
             muted_text_brush,
+            caption_hover_brush,
+            caption_close_hover_brush,
             title_format,
             status_format,
             message_format,
             dpi: dpi.max(1),
             width_px,
             height_px,
+            caption_hot: CaptionButton::None,
+            maximized: false,
         };
         renderer.create_target()?;
         Ok(renderer)
@@ -185,6 +199,7 @@ impl Renderer {
                 layout.title_bar,
                 &self.primary_text_brush,
             );
+            self.draw_caption_buttons(layout.title_bar);
             draw_text(
                 &self.context,
                 "Open an image to begin",
@@ -246,6 +261,14 @@ impl Renderer {
         }
     }
 
+    pub fn set_caption_hot(&mut self, button: CaptionButton) {
+        self.caption_hot = button;
+    }
+
+    pub fn set_maximized(&mut self, maximized: bool) {
+        self.maximized = maximized;
+    }
+
     fn create_target(&mut self) -> Result<()> {
         if self.width_px == 0 || self.height_px == 0 {
             return Ok(());
@@ -271,6 +294,71 @@ impl Renderer {
         }
         self.target = Some(target);
         Ok(())
+    }
+
+    unsafe fn draw_caption_buttons(&self, title_bar: RectF) {
+        const BUTTON_WIDTH: f32 = 46.0;
+        let close = RectF::new(
+            (title_bar.right() - BUTTON_WIDTH).max(0.0),
+            title_bar.y,
+            BUTTON_WIDTH.min(title_bar.width),
+            title_bar.height,
+        );
+        let maximize = RectF::new(
+            (close.x - BUTTON_WIDTH).max(0.0),
+            title_bar.y,
+            BUTTON_WIDTH.min(close.x),
+            title_bar.height,
+        );
+        let minimize = RectF::new(
+            (maximize.x - BUTTON_WIDTH).max(0.0),
+            title_bar.y,
+            BUTTON_WIDTH.min(maximize.x),
+            title_bar.height,
+        );
+
+        if self.caption_hot == CaptionButton::Minimize {
+            unsafe {
+                self.context
+                    .FillRectangle(&to_d2d_rect(minimize), &self.caption_hover_brush)
+            };
+        }
+        if self.caption_hot == CaptionButton::Maximize {
+            unsafe {
+                self.context
+                    .FillRectangle(&to_d2d_rect(maximize), &self.caption_hover_brush)
+            };
+        }
+        if self.caption_hot == CaptionButton::Close {
+            unsafe {
+                self.context
+                    .FillRectangle(&to_d2d_rect(close), &self.caption_close_hover_brush)
+            };
+        }
+
+        unsafe {
+            draw_text(
+                &self.context,
+                "—",
+                &self.title_format,
+                minimize,
+                &self.primary_text_brush,
+            );
+            draw_text(
+                &self.context,
+                if self.maximized { "❐" } else { "□" },
+                &self.title_format,
+                maximize,
+                &self.primary_text_brush,
+            );
+            draw_text(
+                &self.context,
+                "×",
+                &self.title_format,
+                close,
+                &self.primary_text_brush,
+            );
+        }
     }
 }
 
