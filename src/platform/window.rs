@@ -12,6 +12,7 @@ use windows::Win32::Graphics::Gdi::{
     MonitorFromWindow, PAINTSTRUCT, UpdateWindow,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
@@ -212,6 +213,9 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSEMOVE => {
             if let Some(state) = unsafe { state_mut(hwnd) } {
+                let status_changed = state
+                    .renderer
+                    .set_status_hot(signed_low_word(lparam.0), signed_high_word(lparam.0));
                 if state.slider_dragging {
                     state
                         .renderer
@@ -220,9 +224,24 @@ unsafe extern "system" fn window_proc(
                     state
                         .renderer
                         .pointer_move_pan(signed_low_word(lparam.0), signed_high_word(lparam.0));
-                } else {
+                } else if !status_changed {
                     return LRESULT(0);
                 }
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            }
+            let mut tracking = TRACKMOUSEEVENT {
+                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                ..Default::default()
+            };
+            let _ = unsafe { TrackMouseEvent(&mut tracking) };
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            if let Some(state) = unsafe { state_mut(hwnd) }
+                && state.renderer.clear_status_hot()
+            {
                 let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             }
             LRESULT(0)

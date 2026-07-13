@@ -10,6 +10,19 @@ pub enum StatusControl {
     Fullscreen,
 }
 
+impl StatusControl {
+    pub const fn tooltip(self) -> Option<(&'static str, f32)> {
+        match self {
+            Self::ActualSize => Some(("缩放到实际大小 (Ctrl+1)", 196.0)),
+            Self::ZoomMenu => Some(("选择缩放比例", 104.0)),
+            Self::ZoomOut => Some(("缩小", 52.0)),
+            Self::Slider => None,
+            Self::ZoomIn => Some(("放大", 52.0)),
+            Self::Fullscreen => Some(("全屏 (F11)", 84.0)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StatusControlsLayout {
     pub actual_size: RectF,
@@ -65,6 +78,17 @@ impl StatusControlsLayout {
         .into_iter()
         .find_map(|(control, rect)| rect.contains(x, y).then_some(control))
     }
+
+    pub fn rect(self, control: StatusControl) -> RectF {
+        match control {
+            StatusControl::ActualSize => self.actual_size,
+            StatusControl::ZoomMenu => self.zoom_menu,
+            StatusControl::ZoomOut => self.zoom_out,
+            StatusControl::Slider => self.slider,
+            StatusControl::ZoomIn => self.zoom_in,
+            StatusControl::Fullscreen => self.fullscreen,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -80,5 +104,14 @@ mod tests {
             layout.hit_test(1250.0, 726.0),
             Some(StatusControl::Fullscreen)
         );
+    }
+
+    #[test]
+    fn buttons_expose_tooltips_but_slider_does_not() {
+        assert_eq!(
+            StatusControl::ActualSize.tooltip(),
+            Some(("缩放到实际大小 (Ctrl+1)", 196.0))
+        );
+        assert_eq!(StatusControl::Slider.tooltip(), None);
     }
 }

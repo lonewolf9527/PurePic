@@ -60,54 +60,141 @@ fn parse_path(path: &str) -> io::Result<Vec<IconSegment>> {
     let mut index = 0;
     let mut current = IconPoint::default();
     let mut start = IconPoint::default();
+    let mut command = None;
+    let mut last_cubic_control = None;
 
     while index < tokens.len() {
-        let Token::Command(command) = tokens[index] else {
+        if let Some(Token::Command(next_command)) = tokens.get(index).copied() {
+            command = Some(next_command);
+            index += 1;
+        }
+        let Some(active_command) = command else {
             return invalid_path("expected an SVG command");
         };
-        index += 1;
-        match command {
-            'M' => {
-                current = read_point(&tokens, &mut index)?;
+        let relative = active_command.is_ascii_lowercase();
+        match active_command {
+            'M' | 'm' => {
+                current = resolve_point(current, read_point(&tokens, &mut index)?, relative);
                 start = current;
+                command = Some(if relative { 'l' } else { 'L' });
+                last_cubic_control = None;
             }
-            'L' => {
-                let next = read_point(&tokens, &mut index)?;
-                segments.push(IconSegment {
-                    start: current,
-                    end: next,
-                });
-                current = next;
+            'L' | 'l' => {
+                let next = resolve_point(current, read_point(&tokens, &mut index)?, relative);
+                append_line(&mut segments, &mut current, next);
+                last_cubic_control = None;
             }
-            'H' => {
+            'H' | 'h' => {
                 let x = read_number(&tokens, &mut index)?;
-                let next = IconPoint { x, y: current.y };
-                segments.push(IconSegment {
-                    start: current,
-                    end: next,
-                });
-                current = next;
+                let next = IconPoint {
+                    x: if relative { current.x + x } else { x },
+                    y: current.y,
+                };
+                append_line(&mut segments, &mut current, next);
+                last_cubic_control = None;
             }
-            'V' => {
+            'V' | 'v' => {
                 let y = read_number(&tokens, &mut index)?;
-                let next = IconPoint { x: current.x, y };
-                segments.push(IconSegment {
-                    start: current,
-                    end: next,
-                });
-                current = next;
+                let next = IconPoint {
+                    x: current.x,
+                    y: if relative { current.y + y } else { y },
+                };
+                append_line(&mut segments, &mut current, next);
+                last_cubic_control = None;
             }
-            'Z' => {
-                segments.push(IconSegment {
-                    start: current,
-                    end: start,
-                });
-                current = start;
+            'C' | 'c' => {
+                let origin = current;
+                let control_one = resolve_point(origin, read_point(&tokens, &mut index)?, relative);
+                let control_two = resolve_point(origin, read_point(&tokens, &mut index)?, relative);
+                let next = resolve_point(origin, read_point(&tokens, &mut index)?, relative);
+                append_cubic(&mut segments, &mut current, control_one, control_two, next);
+                last_cubic_control = Some(control_two);
             }
-            _ => return invalid_path("only M, L, H, V and Z SVG commands are supported"),
+            'S' | 's' => {
+                let origin = current;
+                let control_one = last_cubic_control
+                    .map(|previous| reflect_point(origin, previous))
+                    .unwrap_or(origin);
+                let control_two = resolve_point(origin, read_point(&tokens, &mut index)?, relative);
+                let next = resolve_point(origin, read_point(&tokens, &mut index)?, relative);
+                append_cubic(&mut segments, &mut current, control_one, control_two, next);
+                last_cubic_control = Some(control_two);
+            }
+            'A' | 'a' => {
+                for _ in 0..5 {
+                    read_number(&tokens, &mut index)?;
+                }
+                let next = resolve_point(current, read_point(&tokens, &mut index)?, relative);
+                append_line(&mut segments, &mut current, next);
+                last_cubic_control = None;
+            }
+            'Z' | 'z' => {
+                append_line(&mut segments, &mut current, start);
+                command = None;
+                last_cubic_control = None;
+            }
+            _ => return invalid_path("unsupported SVG path command"),
         }
     }
     Ok(segments)
+}
+
+fn resolve_point(origin: IconPoint, point: IconPoint, relative: bool) -> IconPoint {
+    if relative {
+        IconPoint {
+            x: origin.x + point.x,
+            y: origin.y + point.y,
+        }
+    } else {
+        point
+    }
+}
+
+fn reflect_point(origin: IconPoint, point: IconPoint) -> IconPoint {
+    IconPoint {
+        x: origin.x * 2.0 - point.x,
+        y: origin.y * 2.0 - point.y,
+    }
+}
+
+fn append_line(segments: &mut Vec<IconSegment>, current: &mut IconPoint, end: IconPoint) {
+    segments.push(IconSegment {
+        start: *current,
+        end,
+    });
+    *current = end;
+}
+
+fn append_cubic(
+    segments: &mut Vec<IconSegment>,
+    current: &mut IconPoint,
+    control_one: IconPoint,
+    control_two: IconPoint,
+    end: IconPoint,
+) {
+    const STEPS: usize = 8;
+    let start = *current;
+    let mut previous = start;
+    for step in 1..=STEPS {
+        let t = step as f32 / STEPS as f32;
+        let inverse = 1.0 - t;
+        let point = IconPoint {
+            x: inverse.powi(3) * start.x
+                + 3.0 * inverse.powi(2) * t * control_one.x
+                + 3.0 * inverse * t.powi(2) * control_two.x
+                + t.powi(3) * end.x,
+            y: inverse.powi(3) * start.y
+                + 3.0 * inverse.powi(2) * t * control_one.y
+                + 3.0 * inverse * t.powi(2) * control_two.y
+                + t.powi(3) * end.y,
+        };
+        segments.push(IconSegment {
+            start: previous,
+            end: point,
+        });
+        previous = point;
+    }
+    *current = end;
 }
 
 fn tokenize(path: &str) -> io::Result<Vec<Token>> {
@@ -171,5 +258,24 @@ mod tests {
         let segments = parse_path("M 4 4 L 20 4 L 20 20 L 4 20 Z").unwrap();
         assert_eq!(segments.len(), 4);
         assert_eq!(segments[3].end, IconPoint { x: 4.0, y: 4.0 });
+    }
+
+    #[test]
+    fn parses_relative_curves_and_arcs() {
+        let segments = parse_path("M 0 0 c 4 0 4 8 8 8 s 4 8 8 0 a 2 2 0 0 1 4 0 z").unwrap();
+        assert!(segments.len() > 16);
+        assert_eq!(segments.last().unwrap().end, IconPoint::default());
+    }
+
+    #[test]
+    fn supplied_status_icons_load_successfully() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("Assets/icons");
+        for name in ["actual-size.svg", "zoom-in.svg", "zoom-out.svg"] {
+            let icon = Icon::load(&directory.join(name)).unwrap();
+            assert!(
+                !icon.segments.is_empty(),
+                "{name} should contain drawable paths"
+            );
+        }
     }
 }

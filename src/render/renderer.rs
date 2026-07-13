@@ -16,8 +16,8 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_LINEAR,
-    D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image,
-    ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext,
+    ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
@@ -43,6 +43,7 @@ use windows_numerics::Vector2;
 const BACKGROUND: D2D1_COLOR_F = color(0x0F, 0x14, 0x17);
 const TITLE_BACKGROUND: D2D1_COLOR_F = color(0x18, 0x20, 0x24);
 const STATUS_BACKGROUND: D2D1_COLOR_F = color(0x1B, 0x23, 0x27);
+const STATUS_CONTROL_BACKGROUND: D2D1_COLOR_F = color(0x27, 0x30, 0x35);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
 const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
 const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
@@ -68,6 +69,7 @@ pub struct Renderer {
     target: Option<ID2D1Bitmap1>,
     title_brush: ID2D1SolidColorBrush,
     status_brush: ID2D1SolidColorBrush,
+    status_control_brush: ID2D1SolidColorBrush,
     primary_text_brush: ID2D1SolidColorBrush,
     secondary_text_brush: ID2D1SolidColorBrush,
     muted_text_brush: ID2D1SolidColorBrush,
@@ -91,6 +93,7 @@ pub struct Renderer {
     fit_mode: bool,
     zoom_menu_open: bool,
     fullscreen: bool,
+    status_hot: Option<StatusControl>,
     pan_x: f32,
     pan_y: f32,
     pan_last_position: Option<(f32, f32)>,
@@ -164,6 +167,8 @@ impl Renderer {
 
         let title_brush = unsafe { context.CreateSolidColorBrush(&TITLE_BACKGROUND, None)? };
         let status_brush = unsafe { context.CreateSolidColorBrush(&STATUS_BACKGROUND, None)? };
+        let status_control_brush =
+            unsafe { context.CreateSolidColorBrush(&STATUS_CONTROL_BACKGROUND, None)? };
         let primary_text_brush = unsafe { context.CreateSolidColorBrush(&PRIMARY_TEXT, None)? };
         let secondary_text_brush = unsafe { context.CreateSolidColorBrush(&SECONDARY_TEXT, None)? };
         let muted_text_brush = unsafe { context.CreateSolidColorBrush(&MUTED_TEXT, None)? };
@@ -181,6 +186,7 @@ impl Renderer {
             target: None,
             title_brush,
             status_brush,
+            status_control_brush,
             primary_text_brush,
             secondary_text_brush,
             muted_text_brush,
@@ -204,6 +210,7 @@ impl Renderer {
             fit_mode: true,
             zoom_menu_open: false,
             fullscreen: false,
+            status_hot: None,
             pan_x: 0.0,
             pan_y: 0.0,
             pan_last_position: None,
@@ -284,6 +291,7 @@ impl Renderer {
                 if self.zoom_menu_open {
                     self.draw_zoom_menu(controls.zoom_menu, layout.canvas);
                 }
+                self.draw_status_tooltip(controls, layout.canvas);
             }
 
             self.context.EndDraw(None, None)?;
@@ -336,10 +344,32 @@ impl Renderer {
     pub fn set_fullscreen(&mut self, fullscreen: bool) {
         self.fullscreen = fullscreen;
         self.zoom_menu_open = false;
+        self.status_hot = None;
     }
 
     pub fn close_zoom_menu(&mut self) -> bool {
         std::mem::take(&mut self.zoom_menu_open)
+    }
+
+    pub fn set_status_hot(&mut self, x_px: i32, y_px: i32) -> bool {
+        let status_hot = if self.fullscreen {
+            None
+        } else {
+            let (x, y) = self.point_to_dip(x_px, y_px);
+            let layout = self.current_layout();
+            StatusControlsLayout::compute(layout.status_bar)
+                .hit_test(x, y)
+                .filter(|control| control.tooltip().is_some())
+        };
+        if self.status_hot == status_hot {
+            return false;
+        }
+        self.status_hot = status_hot;
+        true
+    }
+
+    pub fn clear_status_hot(&mut self) -> bool {
+        self.status_hot.take().is_some()
     }
 
     pub fn pointer_down(&mut self, x_px: i32, y_px: i32) -> PointerAction {
@@ -357,6 +387,7 @@ impl Renderer {
                 return PointerAction::None;
             }
             self.zoom_menu_open = false;
+            return PointerAction::None;
         }
 
         match controls.hit_test(x, y) {
@@ -563,6 +594,16 @@ impl Renderer {
     unsafe fn draw_status_controls(&self, controls: StatusControlsLayout, canvas: RectF) {
         let icon_inset = 8.0;
         unsafe {
+            self.context.FillRoundedRectangle(
+                &to_d2d_rounded_rect(controls.zoom_menu, 6.0),
+                &self.status_control_brush,
+            );
+            if let Some(control) = self.status_hot {
+                self.context.FillRoundedRectangle(
+                    &to_d2d_rounded_rect(controls.rect(control), 6.0),
+                    &self.caption_hover_brush,
+                );
+            }
             draw_icon(
                 &self.context,
                 &self.icons.actual_size,
@@ -570,8 +611,6 @@ impl Renderer {
                 &self.primary_text_brush,
                 1.7,
             );
-            self.context
-                .FillRectangle(&to_d2d_rect(controls.zoom_menu), &self.caption_hover_brush);
             let label_rect = RectF::new(
                 controls.zoom_menu.x + 5.0,
                 controls.zoom_menu.y,
@@ -643,7 +682,7 @@ impl Renderer {
         let menu = self.zoom_menu_rect(button);
         unsafe {
             self.context
-                .FillRectangle(&to_d2d_rect(menu), &self.title_brush)
+                .FillRoundedRectangle(&to_d2d_rounded_rect(menu, 8.0), &self.title_brush)
         };
         let current = self.current_zoom(canvas);
         for (index, choice) in ZOOM_CHOICES.iter().copied().enumerate() {
@@ -653,9 +692,12 @@ impl Renderer {
                 ZoomChoice::Percent(value) => !self.fit_mode && (current - value).abs() < 0.001,
             };
             if selected {
+                let selected_row = RectF::new(row.x + 4.0, row.y + 2.0, row.width - 8.0, 26.0);
                 unsafe {
-                    self.context
-                        .FillRectangle(&to_d2d_rect(row), &self.caption_hover_brush)
+                    self.context.FillRoundedRectangle(
+                        &to_d2d_rounded_rect(selected_row, 5.0),
+                        &self.caption_hover_brush,
+                    )
                 };
             }
             unsafe {
@@ -667,6 +709,34 @@ impl Renderer {
                     &self.primary_text_brush,
                 )
             };
+        }
+    }
+
+    unsafe fn draw_status_tooltip(&self, controls: StatusControlsLayout, canvas: RectF) {
+        let Some(control) = self.status_hot else {
+            return;
+        };
+        let Some((label, width)) = control.tooltip() else {
+            return;
+        };
+        let button = controls.rect(control);
+        let rect = RectF::new(
+            (button.x + (button.width - width) * 0.5)
+                .clamp(canvas.x + 8.0, canvas.right() - width - 8.0),
+            button.y - 40.0,
+            width,
+            32.0,
+        );
+        unsafe {
+            self.context
+                .FillRoundedRectangle(&to_d2d_rounded_rect(rect, 6.0), &self.title_brush);
+            draw_text(
+                &self.context,
+                label,
+                &self.status_format,
+                rect,
+                &self.primary_text_brush,
+            );
         }
     }
 
@@ -945,6 +1015,14 @@ fn to_d2d_rect(rect: RectF) -> D2D_RECT_F {
         top: rect.y,
         right: rect.right(),
         bottom: rect.bottom(),
+    }
+}
+
+fn to_d2d_rounded_rect(rect: RectF, radius: f32) -> D2D1_ROUNDED_RECT {
+    D2D1_ROUNDED_RECT {
+        rect: to_d2d_rect(rect),
+        radiusX: radius,
+        radiusY: radius,
     }
 }
 
