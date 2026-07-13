@@ -1,9 +1,9 @@
 pub const MIN_ZOOM: f64 = 0.01;
-pub const MAX_ZOOM: f64 = 32.0;
+pub const MAX_ZOOM: f64 = 8.0;
 
 pub const ZOOM_STEPS: &[f64] = &[
     0.01, 0.02, 0.05, 0.10, 0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 3.00, 4.00, 5.00, 6.00, 7.00,
-    8.00, 12.00, 16.00, 24.00, 32.00,
+    8.00,
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -121,6 +121,8 @@ mod tests {
         assert_eq!(step_zoom(0.56, -1), 0.50);
         assert_eq!(step_zoom(1.0, 1), 1.25);
         assert_eq!(step_zoom(1.0, -1), 0.75);
+        assert_eq!(step_zoom(MAX_ZOOM, 1), MAX_ZOOM);
+        assert_eq!(step_zoom(MAX_ZOOM, -1), 7.0);
     }
 
     #[test]

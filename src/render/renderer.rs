@@ -231,12 +231,6 @@ impl Renderer {
         unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&BACKGROUND));
-            if !self.fullscreen {
-                self.context
-                    .FillRectangle(&to_d2d_rect(layout.title_bar), &self.title_brush);
-                self.context
-                    .FillRectangle(&to_d2d_rect(layout.status_bar), &self.status_brush);
-            }
 
             if let Some(image) = &self.image {
                 let zoom = self.current_zoom(layout.canvas);
@@ -269,6 +263,12 @@ impl Renderer {
                 );
             }
             if !self.fullscreen {
+                // The chrome is an overlay: large, zoomed images may extend beyond the
+                // canvas, but must never obscure the title or status bars.
+                self.context
+                    .FillRectangle(&to_d2d_rect(layout.title_bar), &self.title_brush);
+                self.context
+                    .FillRectangle(&to_d2d_rect(layout.status_bar), &self.status_brush);
                 draw_text(
                     &self.context,
                     &self.title,
@@ -709,7 +709,7 @@ enum ZoomChoice {
     Percent(f32),
 }
 
-const ZOOM_CHOICES: [ZoomChoice; 11] = [
+const ZOOM_CHOICES: [ZoomChoice; 10] = [
     ZoomChoice::Fit,
     ZoomChoice::Percent(0.10),
     ZoomChoice::Percent(0.25),
@@ -720,7 +720,6 @@ const ZOOM_CHOICES: [ZoomChoice; 11] = [
     ZoomChoice::Percent(2.00),
     ZoomChoice::Percent(4.00),
     ZoomChoice::Percent(8.00),
-    ZoomChoice::Percent(16.00),
 ];
 
 fn zoom_choice_label(choice: ZoomChoice) -> &'static str {
@@ -735,7 +734,6 @@ fn zoom_choice_label(choice: ZoomChoice) -> &'static str {
         ZoomChoice::Percent(2.00) => "200%",
         ZoomChoice::Percent(4.00) => "400%",
         ZoomChoice::Percent(8.00) => "800%",
-        ZoomChoice::Percent(16.00) => "1600%",
         ZoomChoice::Percent(_) => "自定义",
     }
 }
