@@ -24,6 +24,7 @@ pub struct Icon {
 impl Icon {
     pub fn load(path: &Path) -> io::Result<Self> {
         let source = fs::read_to_string(path)?;
+        let (width, height) = parse_view_box(&source)?;
         let mut segments = Vec::new();
         let mut remaining = source.as_str();
         while let Some(index) = remaining.find(" d=\"") {
@@ -41,11 +42,65 @@ impl Icon {
             ));
         }
         Ok(Self {
-            width: 24.0,
-            height: 24.0,
+            width,
+            height,
             segments,
         })
     }
+}
+
+fn parse_view_box(source: &str) -> io::Result<(f32, f32)> {
+    let svg_start = source.find("<svg").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SVG is missing its root element",
+        )
+    })?;
+    let svg_end = source[svg_start..]
+        .find('>')
+        .map(|index| svg_start + index)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "SVG root element is incomplete")
+        })?;
+    let svg_tag = &source[svg_start..=svg_end];
+    let view_box_start = svg_tag.find("viewBox=\"").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SVG is missing a viewBox attribute",
+        )
+    })? + "viewBox=\"".len();
+    let view_box = &svg_tag[view_box_start..];
+    let view_box_end = view_box.find('"').ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SVG viewBox attribute is incomplete",
+        )
+    })?;
+    let values: Vec<_> = view_box[..view_box_end]
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<f32>().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "SVG viewBox contains an invalid number",
+                )
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let [_, _, width, height] = values.as_slice() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SVG viewBox must contain four numbers",
+        ));
+    };
+    if *width <= 0.0 || *height <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SVG viewBox dimensions must be positive",
+        ));
+    }
+    Ok((*width, *height))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -277,5 +332,12 @@ mod tests {
                 "{name} should contain drawable paths"
             );
         }
+    }
+
+    #[test]
+    fn uses_the_supplied_svg_view_box_dimensions() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Assets/icons/zoom-in.svg");
+        let icon = Icon::load(&path).unwrap();
+        assert_eq!((icon.width, icon.height), (1024.0, 1024.0));
     }
 }
