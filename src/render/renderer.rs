@@ -20,8 +20,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
@@ -67,6 +67,7 @@ pub struct Renderer {
     caption_close_hover_brush: ID2D1SolidColorBrush,
     title_format: IDWriteTextFormat,
     status_format: IDWriteTextFormat,
+    controls_format: IDWriteTextFormat,
     message_format: IDWriteTextFormat,
     dpi: u32,
     width_px: u32,
@@ -133,6 +134,8 @@ impl Renderer {
         let title_format = create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
         let status_format =
             create_text_format(&write_factory, 13.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        let controls_format =
+            create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
         let message_format =
             create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
 
@@ -161,6 +164,7 @@ impl Renderer {
             caption_close_hover_brush,
             title_format,
             status_format,
+            controls_format,
             message_format,
             dpi: dpi.max(1),
             width_px,
@@ -194,10 +198,12 @@ impl Renderer {
             (layout.status_bar.width - 440.0).max(0.0),
             layout.status_bar.height,
         );
+        let controls_right = (layout.status_bar.right() - 18.0).max(0.0);
+        let controls_left = (controls_right - 520.0).max(0.0);
         let status_right = RectF::new(
-            (layout.status_bar.right() - 420.0).max(0.0),
+            controls_left,
             layout.status_bar.y,
-            layout.status_bar.width.min(400.0),
+            controls_right - controls_left,
             layout.status_bar.height,
         );
 
@@ -257,7 +263,7 @@ impl Renderer {
             draw_text(
                 &self.context,
                 "1:1    100%    −   ━━●━━   +    ⛶",
-                &self.title_format,
+                &self.controls_format,
                 status_right,
                 &self.primary_text_brush,
             );
@@ -340,11 +346,14 @@ impl Renderer {
         };
 
         self.title = image.file_name;
+        let size_label = if image.file_size == 0 {
+            "内置演示图".to_owned()
+        } else {
+            format_file_size(image.file_size)
+        };
         self.status = format!(
             "{} × {}     {}",
-            image.original_width,
-            image.original_height,
-            format_file_size(image.file_size)
+            image.original_width, image.original_height, size_label
         );
         self.message.clear();
         self.image = Some(RenderedImage {

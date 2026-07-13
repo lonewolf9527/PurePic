@@ -2,7 +2,7 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 
-use crate::image::{DecodedImage, decode_preview};
+use crate::image::{DecodedImage, create_demo_image, decode_preview};
 use crate::platform::chrome::{apply_dwm_attributes, non_client_hit_test};
 use crate::render::Renderer;
 use purepic::ui::chrome::CaptionButton;
@@ -20,13 +20,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
     DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW, HTCLOSE,
-    HTMAXBUTTON, HTMINBUTTON, IDC_ARROW, IsZoomed, LoadCursorW, MSG, PostMessageW, PostQuitMessage,
-    RegisterClassExW, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
-    WM_APP, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCMOUSELEAVE,
-    WM_NCMOUSEMOVE, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    HTMAXBUTTON, HTMINBUTTON, IDC_ARROW, IsZoomed, LoadCursorW, LoadIconW, MSG, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SW_SHOW,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE,
+    WM_PAINT, WM_SIZE, WM_SYSCOMMAND, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
-use windows::core::{Error, Result, w};
+use windows::core::{Error, PCWSTR, Result, w};
 
 const INITIAL_WIDTH: i32 = 1280;
 const INITIAL_HEIGHT: i32 = 800;
@@ -48,13 +49,17 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     let module = unsafe { GetModuleHandleW(None)? };
     let instance = HINSTANCE(module.0);
     let class_name = w!("PurePic.MainWindow");
+    let app_icon =
+        unsafe { LoadIconW(Some(instance), PCWSTR(1_usize as *const u16)) }.unwrap_or_default();
 
     let window_class = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
         style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
         lpfnWndProc: Some(window_proc),
         hInstance: instance,
+        hIcon: app_icon,
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
+        hIconSm: app_icon,
         lpszClassName: class_name,
         ..Default::default()
     };
@@ -103,6 +108,8 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     )?;
     if let Some(path) = &image_path {
         renderer.set_loading(path);
+    } else {
+        renderer.set_image(create_demo_image())?;
     }
     let state = Box::new(WindowState {
         renderer,
@@ -174,6 +181,28 @@ unsafe extern "system" fn window_proc(
         }
         windows::Win32::UI::WindowsAndMessaging::WM_NCHITTEST => {
             LRESULT(non_client_hit_test(hwnd, lparam) as isize)
+        }
+        WM_NCLBUTTONDOWN => {
+            let command = match wparam.0 as u32 {
+                HTMINBUTTON => Some(SC_MINIMIZE),
+                HTMAXBUTTON if unsafe { IsZoomed(hwnd) }.as_bool() => Some(SC_RESTORE),
+                HTMAXBUTTON => Some(SC_MAXIMIZE),
+                HTCLOSE => Some(SC_CLOSE),
+                _ => None,
+            };
+            if let Some(command) = command {
+                let _ = unsafe {
+                    PostMessageW(
+                        Some(hwnd),
+                        WM_SYSCOMMAND,
+                        WPARAM(command as usize),
+                        LPARAM(0),
+                    )
+                };
+                LRESULT(0)
+            } else {
+                unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+            }
         }
         WM_NCMOUSEMOVE => {
             if let Some(state) = unsafe { state_mut(hwnd) } {
