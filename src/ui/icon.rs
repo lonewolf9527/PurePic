@@ -15,27 +15,50 @@ pub struct IconSegment {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
+pub struct IconPath {
+    pub segments: Vec<IconSegment>,
+    pub fill: bool,
+    pub stroke: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Icon {
     pub width: f32,
     pub height: f32,
-    pub segments: Vec<IconSegment>,
+    pub paths: Vec<IconPath>,
 }
 
 impl Icon {
     pub fn load(path: &Path) -> io::Result<Self> {
         let source = fs::read_to_string(path)?;
         let (width, height) = parse_view_box(&source)?;
-        let mut segments = Vec::new();
+        let svg_tag = root_tag(&source)?;
+        let root_fill = attribute(svg_tag, "fill");
+        let root_stroke = attribute(svg_tag, "stroke");
+        let mut paths = Vec::new();
         let mut remaining = source.as_str();
-        while let Some(index) = remaining.find(" d=\"") {
-            remaining = &remaining[index + 4..];
-            let end = remaining.find('"').ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "SVG path is missing a quote")
+        while let Some(index) = remaining.find("<path") {
+            remaining = &remaining[index..];
+            let end = remaining.find('>').ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "SVG path element is incomplete")
             })?;
-            segments.extend(parse_path(&remaining[..end])?);
+            let path_tag = &remaining[..=end];
+            let data = attribute(path_tag, "d").ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "SVG path is missing path data")
+            })?;
+            let fill = attribute(path_tag, "fill").or(root_fill).unwrap_or("black") != "none";
+            let stroke = attribute(path_tag, "stroke")
+                .or(root_stroke)
+                .unwrap_or("none")
+                != "none";
+            paths.push(IconPath {
+                segments: parse_path(data)?,
+                fill,
+                stroke,
+            });
             remaining = &remaining[end + 1..];
         }
-        if segments.is_empty() {
+        if paths.iter().all(|path| path.segments.is_empty()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "SVG contains no supported path segments",
@@ -44,12 +67,12 @@ impl Icon {
         Ok(Self {
             width,
             height,
-            segments,
+            paths,
         })
     }
 }
 
-fn parse_view_box(source: &str) -> io::Result<(f32, f32)> {
+fn root_tag(source: &str) -> io::Result<&str> {
     let svg_start = source.find("<svg").ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -62,21 +85,25 @@ fn parse_view_box(source: &str) -> io::Result<(f32, f32)> {
         .ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "SVG root element is incomplete")
         })?;
-    let svg_tag = &source[svg_start..=svg_end];
-    let view_box_start = svg_tag.find("viewBox=\"").ok_or_else(|| {
+    Ok(&source[svg_start..=svg_end])
+}
+
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let marker = format!("{name}=\"");
+    let start = tag.find(&marker)? + marker.len();
+    let value = &tag[start..];
+    Some(&value[..value.find('"')?])
+}
+
+fn parse_view_box(source: &str) -> io::Result<(f32, f32)> {
+    let svg_tag = root_tag(source)?;
+    let view_box = attribute(svg_tag, "viewBox").ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "SVG is missing a viewBox attribute",
         )
-    })? + "viewBox=\"".len();
-    let view_box = &svg_tag[view_box_start..];
-    let view_box_end = view_box.find('"').ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "SVG viewBox attribute is incomplete",
-        )
     })?;
-    let values: Vec<_> = view_box[..view_box_end]
+    let values: Vec<_> = view_box
         .split(|character: char| character.is_whitespace() || character == ',')
         .filter(|value| !value.is_empty())
         .map(|value| {
@@ -460,7 +487,7 @@ mod tests {
         for name in ["actual-size.svg", "zoom-in.svg", "zoom-out.svg"] {
             let icon = Icon::load(&directory.join(name)).unwrap();
             assert!(
-                !icon.segments.is_empty(),
+                icon.paths.iter().any(|path| !path.segments.is_empty()),
                 "{name} should contain drawable paths"
             );
         }
@@ -471,5 +498,15 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Assets/icons/zoom-in.svg");
         let icon = Icon::load(&path).unwrap();
         assert_eq!((icon.width, icon.height), (1024.0, 1024.0));
+    }
+
+    #[test]
+    fn preserves_svg_fill_and_stroke_paint_modes() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("Assets/icons");
+        let filled = Icon::load(&directory.join("actual-size.svg")).unwrap();
+        assert!(filled.paths.iter().all(|path| path.fill && !path.stroke));
+
+        let outlined = Icon::load(&directory.join("fullscreen.svg")).unwrap();
+        assert!(outlined.paths.iter().all(|path| !path.fill && path.stroke));
     }
 }

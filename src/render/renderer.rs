@@ -10,13 +10,13 @@ use purepic::ui::zoom::{
 use windows::Win32::Foundation::{E_FAIL, HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
-    D2D1_PIXEL_FORMAT,
+    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED, D2D1_FILL_MODE_WINDING, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_ELLIPSE, D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1,
+    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Brush,
     ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
     ID2D1StrokeStyle,
 };
@@ -64,7 +64,7 @@ const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
 
 pub struct Renderer {
     _d3d_device: ID3D11Device,
-    _d2d_factory: ID2D1Factory1,
+    d2d_factory: ID2D1Factory1,
     _d2d_device: ID2D1Device,
     context: ID2D1DeviceContext,
     swap_chain: IDXGISwapChain1,
@@ -80,6 +80,7 @@ pub struct Renderer {
     accent_brush: ID2D1SolidColorBrush,
     title_format: IDWriteTextFormat,
     status_format: IDWriteTextFormat,
+    tooltip_format: IDWriteTextFormat,
     message_format: IDWriteTextFormat,
     dpi: u32,
     width_px: u32,
@@ -164,6 +165,8 @@ impl Renderer {
         let title_format = create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
         let status_format =
             create_text_format(&write_factory, 13.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        let tooltip_format =
+            create_text_format(&write_factory, 13.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
         let message_format =
             create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
 
@@ -181,7 +184,7 @@ impl Renderer {
 
         let mut renderer = Self {
             _d3d_device: d3d_device,
-            _d2d_factory: d2d_factory,
+            d2d_factory,
             _d2d_device: d2d_device,
             context,
             swap_chain,
@@ -197,6 +200,7 @@ impl Renderer {
             accent_brush,
             title_format,
             status_format,
+            tooltip_format,
             message_format,
             dpi: dpi.max(1),
             width_px,
@@ -567,6 +571,7 @@ impl Renderer {
         unsafe {
             draw_icon(
                 &self.context,
+                &self.d2d_factory,
                 &self.icons.window_minimize,
                 inset(minimize, 10.0),
                 &self.primary_text_brush,
@@ -574,6 +579,7 @@ impl Renderer {
             );
             draw_icon(
                 &self.context,
+                &self.d2d_factory,
                 if self.maximized {
                     &self.icons.window_restore
                 } else {
@@ -585,6 +591,7 @@ impl Renderer {
             );
             draw_icon(
                 &self.context,
+                &self.d2d_factory,
                 &self.icons.window_close,
                 inset(close, 10.0),
                 &self.primary_text_brush,
@@ -608,6 +615,7 @@ impl Renderer {
             }
             draw_icon(
                 &self.context,
+                &self.d2d_factory,
                 &self.icons.actual_size,
                 inset(controls.actual_size, icon_inset),
                 &self.primary_text_brush,
@@ -634,6 +642,7 @@ impl Renderer {
             );
             draw_icon(
                 &self.context,
+                &self.d2d_factory,
                 &self.icons.chevron_down,
                 chevron_rect,
                 &self.primary_text_brush,
@@ -641,6 +650,7 @@ impl Renderer {
             );
             draw_icon(
                 &self.context,
+                &self.d2d_factory,
                 &self.icons.zoom_out,
                 inset(controls.zoom_out, icon_inset),
                 &self.primary_text_brush,
@@ -648,6 +658,7 @@ impl Renderer {
             );
             draw_icon(
                 &self.context,
+                &self.d2d_factory,
                 &self.icons.zoom_in,
                 inset(controls.zoom_in, icon_inset),
                 &self.primary_text_brush,
@@ -655,6 +666,7 @@ impl Renderer {
             );
             draw_icon(
                 &self.context,
+                &self.d2d_factory,
                 &self.icons.fullscreen,
                 inset(controls.fullscreen, icon_inset),
                 &self.primary_text_brush,
@@ -735,7 +747,7 @@ impl Renderer {
             draw_text(
                 &self.context,
                 label,
-                &self.status_format,
+                &self.tooltip_format,
                 rect,
                 &self.primary_text_brush,
             );
@@ -900,46 +912,112 @@ fn inset(rect: RectF, amount: f32) -> RectF {
 
 unsafe fn draw_icon(
     context: &ID2D1DeviceContext,
+    factory: &ID2D1Factory1,
     icon: &Icon,
     target: RectF,
     brush: &ID2D1SolidColorBrush,
     stroke_width: f32,
 ) {
-    if icon.width <= 0.0 || icon.height <= 0.0 || icon.segments.is_empty() {
+    if icon.width <= 0.0 || icon.height <= 0.0 || icon.paths.is_empty() {
         return;
     }
     let scale = (target.width / icon.width).min(target.height / icon.height);
     let origin_x = target.x + (target.width - icon.width * scale) * 0.5;
     let origin_y = target.y + (target.height - icon.height * scale) * 0.5;
-    for segment in &icon.segments {
-        let start = Vector2 {
-            X: origin_x + segment.start.x * scale,
-            Y: origin_y + segment.start.y * scale,
-        };
-        let end = Vector2 {
-            X: origin_x + segment.end.x * scale,
-            Y: origin_y + segment.end.y * scale,
-        };
-        unsafe {
-            context.DrawLine(start, end, brush, stroke_width, None::<&ID2D1StrokeStyle>);
-            let radius = stroke_width * 0.5;
-            context.FillEllipse(
-                &D2D1_ELLIPSE {
-                    point: start,
-                    radiusX: radius,
-                    radiusY: radius,
-                },
-                brush,
-            );
-            context.FillEllipse(
-                &D2D1_ELLIPSE {
-                    point: end,
-                    radiusX: radius,
-                    radiusY: radius,
-                },
-                brush,
-            );
+    for path in &icon.paths {
+        if path.fill {
+            unsafe {
+                fill_icon_path(
+                    context,
+                    factory,
+                    &path.segments,
+                    origin_x,
+                    origin_y,
+                    scale,
+                    brush,
+                );
+            }
         }
+        if path.stroke {
+            for segment in &path.segments {
+                let start = transform_icon_point(segment.start, origin_x, origin_y, scale);
+                let end = transform_icon_point(segment.end, origin_x, origin_y, scale);
+                unsafe {
+                    context.DrawLine(start, end, brush, stroke_width, None::<&ID2D1StrokeStyle>);
+                    let radius = stroke_width * 0.5;
+                    context.FillEllipse(
+                        &D2D1_ELLIPSE {
+                            point: start,
+                            radiusX: radius,
+                            radiusY: radius,
+                        },
+                        brush,
+                    );
+                    context.FillEllipse(
+                        &D2D1_ELLIPSE {
+                            point: end,
+                            radiusX: radius,
+                            radiusY: radius,
+                        },
+                        brush,
+                    );
+                }
+            }
+        }
+    }
+}
+
+unsafe fn fill_icon_path(
+    context: &ID2D1DeviceContext,
+    factory: &ID2D1Factory1,
+    segments: &[purepic::ui::icon::IconSegment],
+    origin_x: f32,
+    origin_y: f32,
+    scale: f32,
+    brush: &ID2D1SolidColorBrush,
+) {
+    let Ok(geometry) = (unsafe { factory.CreatePathGeometry() }) else {
+        return;
+    };
+    let Ok(sink) = (unsafe { geometry.Open() }) else {
+        return;
+    };
+    unsafe { sink.SetFillMode(D2D1_FILL_MODE_WINDING) };
+
+    let mut figure_start = 0;
+    while figure_start < segments.len() {
+        let mut figure_end = figure_start + 1;
+        while figure_end < segments.len()
+            && segments[figure_end - 1].end == segments[figure_end].start
+        {
+            figure_end += 1;
+        }
+        let first = transform_icon_point(segments[figure_start].start, origin_x, origin_y, scale);
+        let points: Vec<_> = segments[figure_start..figure_end]
+            .iter()
+            .map(|segment| transform_icon_point(segment.end, origin_x, origin_y, scale))
+            .collect();
+        unsafe {
+            sink.BeginFigure(first, D2D1_FIGURE_BEGIN_FILLED);
+            sink.AddLines(&points);
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+        }
+        figure_start = figure_end;
+    }
+    if unsafe { sink.Close() }.is_ok() {
+        unsafe { context.FillGeometry(&geometry, brush, None::<&ID2D1Brush>) };
+    }
+}
+
+fn transform_icon_point(
+    point: purepic::ui::icon::IconPoint,
+    origin_x: f32,
+    origin_y: f32,
+    scale: f32,
+) -> Vector2 {
+    Vector2 {
+        X: origin_x + point.x * scale,
+        Y: origin_y + point.y * scale,
     }
 }
 
