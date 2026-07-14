@@ -1,9 +1,7 @@
-use std::env;
-use std::path::{Path, PathBuf};
-
 use purepic::ui::icon::Icon;
 
 pub struct IconSet {
+    pub app: Icon,
     pub window_minimize: Icon,
     pub window_maximize: Icon,
     pub window_restore: Icon,
@@ -17,41 +15,44 @@ pub struct IconSet {
 
 impl IconSet {
     pub fn load() -> Self {
-        let directory = find_icon_directory();
         Self {
-            window_minimize: load(&directory, "window-minimize.svg"),
-            window_maximize: load(&directory, "window-maximize.svg"),
-            window_restore: load(&directory, "window-restore.svg"),
-            window_close: load(&directory, "window-close.svg"),
-            actual_size: load(&directory, "actual-size.svg"),
-            chevron_down: load(&directory, "chevron-down.svg"),
-            zoom_out: load(&directory, "zoom-out.svg"),
-            zoom_in: load(&directory, "zoom-in.svg"),
-            fullscreen: load(&directory, "fullscreen.svg"),
+            app: load(include_str!("../../Assets/icons/app.svg")),
+            window_minimize: load(include_str!("../../Assets/icons/window-minimize.svg")),
+            window_maximize: load(include_str!("../../Assets/icons/window-maximize.svg")),
+            window_restore: load(include_str!("../../Assets/icons/window-restore.svg")),
+            window_close: load(include_str!("../../Assets/icons/window-close.svg")),
+            actual_size: load(include_str!("../../Assets/icons/actual-size.svg")),
+            chevron_down: load(include_str!("../../Assets/icons/chevron-down.svg")),
+            zoom_out: load(include_str!("../../Assets/icons/zoom-out.svg")),
+            zoom_in: load(include_str!("../../Assets/icons/zoom-in.svg")),
+            fullscreen: load(include_str!("../../Assets/icons/fullscreen.svg")),
         }
     }
 }
 
-fn load(directory: &Path, name: &str) -> Icon {
-    Icon::load(&directory.join(name)).unwrap_or_default()
+fn load(source: &str) -> Icon {
+    Icon::from_svg(source).expect("embedded SVG icon must be valid")
 }
 
-fn find_icon_directory() -> PathBuf {
-    if let Ok(executable) = env::current_exe()
-        && let Some(directory) = executable.parent()
-    {
-        let candidate = directory.join("Assets").join("icons");
-        if candidate.is_dir() {
-            return candidate;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_icons_are_valid_and_caption_strokes_are_thin() {
+        let icons = IconSet::load();
+        assert!(!icons.app.paths.is_empty());
+        for icon in [
+            icons.window_minimize,
+            icons.window_maximize,
+            icons.window_restore,
+            icons.window_close,
+        ] {
+            assert!(
+                icon.paths
+                    .iter()
+                    .all(|path| (path.stroke_width - 1.2).abs() < f32::EPSILON)
+            );
         }
     }
-    if let Ok(current) = env::current_dir() {
-        let candidate = current.join("Assets").join("icons");
-        if candidate.is_dir() {
-            return candidate;
-        }
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("Assets")
-        .join("icons")
 }

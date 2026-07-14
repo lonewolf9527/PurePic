@@ -41,9 +41,9 @@ use windows::Win32::Graphics::Dxgi::{
 use windows::core::{Error, Interface, Result, w};
 use windows_numerics::Vector2;
 
-const BACKGROUND: D2D1_COLOR_F = color(0x0F, 0x14, 0x17);
+const BACKGROUND: D2D1_COLOR_F = color(0x20, 0x20, 0x20);
 const TITLE_BACKGROUND: D2D1_COLOR_F = color(0x18, 0x20, 0x24);
-const STATUS_BACKGROUND: D2D1_COLOR_F = color(0x1B, 0x23, 0x27);
+const STATUS_BACKGROUND: D2D1_COLOR_F = color(0x27, 0x27, 0x27);
 const STATUS_CONTROL_BACKGROUND: D2D1_COLOR_F = color(0x27, 0x30, 0x35);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
 const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
@@ -52,6 +52,7 @@ const CAPTION_HOVER: D2D1_COLOR_F = color(0x31, 0x3A, 0x3F);
 const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
 const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
 const PAN_EDGE_PADDING_DIP: f32 = 24.0;
+const APP_TITLE: &str = "PurePic图片查看器";
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -79,6 +80,7 @@ pub struct Renderer {
     caption_close_hover_brush: ID2D1SolidColorBrush,
     accent_brush: ID2D1SolidColorBrush,
     title_format: IDWriteTextFormat,
+    brand_format: IDWriteTextFormat,
     status_format: IDWriteTextFormat,
     tooltip_format: IDWriteTextFormat,
     message_format: IDWriteTextFormat,
@@ -164,6 +166,7 @@ impl Renderer {
         let write_factory: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let title_format = create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        let brand_format = create_text_format(&write_factory, 14.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         let status_format =
             create_text_format(&write_factory, 13.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         let tooltip_format =
@@ -200,6 +203,7 @@ impl Renderer {
             caption_close_hover_brush,
             accent_brush,
             title_format,
+            brand_format,
             status_format,
             tooltip_format,
             message_format,
@@ -287,6 +291,7 @@ impl Renderer {
                     layout.title_bar,
                     &self.primary_text_brush,
                 );
+                self.draw_title_brand(layout.title_bar);
                 self.draw_caption_buttons(layout.title_bar);
                 draw_text(
                     &self.context,
@@ -594,7 +599,6 @@ impl Renderer {
                 &self.icons.window_minimize,
                 inset(minimize, 10.0),
                 &self.primary_text_brush,
-                1.6,
             );
             draw_icon(
                 &self.context,
@@ -606,7 +610,6 @@ impl Renderer {
                 },
                 inset(maximize, 10.0),
                 &self.primary_text_brush,
-                1.6,
             );
             draw_icon(
                 &self.context,
@@ -614,7 +617,32 @@ impl Renderer {
                 &self.icons.window_close,
                 inset(close, 10.0),
                 &self.primary_text_brush,
-                1.6,
+            );
+        }
+    }
+
+    unsafe fn draw_title_brand(&self, title_bar: RectF) {
+        let icon = RectF::new(
+            title_bar.x + 10.0,
+            title_bar.y + (title_bar.height - 20.0) * 0.5,
+            20.0,
+            20.0,
+        );
+        let label = RectF::new(icon.right() + 8.0, title_bar.y, 180.0, title_bar.height);
+        unsafe {
+            draw_icon(
+                &self.context,
+                &self.d2d_factory,
+                &self.icons.app,
+                icon,
+                &self.accent_brush,
+            );
+            draw_text(
+                &self.context,
+                APP_TITLE,
+                &self.brand_format,
+                label,
+                &self.primary_text_brush,
             );
         }
     }
@@ -638,7 +666,6 @@ impl Renderer {
                 &self.icons.actual_size,
                 inset(controls.actual_size, icon_inset),
                 &self.primary_text_brush,
-                1.7,
             );
             let label_rect = RectF::new(
                 controls.zoom_menu.x + 5.0,
@@ -665,7 +692,6 @@ impl Renderer {
                 &self.icons.chevron_down,
                 chevron_rect,
                 &self.primary_text_brush,
-                1.6,
             );
             draw_icon(
                 &self.context,
@@ -673,7 +699,6 @@ impl Renderer {
                 &self.icons.zoom_out,
                 inset(controls.zoom_out, icon_inset),
                 &self.primary_text_brush,
-                1.7,
             );
             draw_icon(
                 &self.context,
@@ -681,7 +706,6 @@ impl Renderer {
                 &self.icons.zoom_in,
                 inset(controls.zoom_in, icon_inset),
                 &self.primary_text_brush,
-                1.7,
             );
             draw_icon(
                 &self.context,
@@ -689,7 +713,6 @@ impl Renderer {
                 &self.icons.fullscreen,
                 inset(controls.fullscreen, icon_inset),
                 &self.primary_text_brush,
-                1.7,
             );
 
             let track = RectF::new(
@@ -882,9 +905,9 @@ impl Renderer {
     fn zoom_menu_rect(&self, button: RectF) -> RectF {
         let height = ZOOM_CHOICES.len() as f32 * 30.0;
         RectF::new(
-            button.right() - 128.0,
+            button.right() - 104.0,
             button.y - height - 6.0,
-            128.0,
+            104.0,
             height,
         )
     }
@@ -962,7 +985,6 @@ unsafe fn draw_icon(
     icon: &Icon,
     target: RectF,
     brush: &ID2D1SolidColorBrush,
-    stroke_width: f32,
 ) {
     if icon.width <= 0.0 || icon.height <= 0.0 || icon.paths.is_empty() {
         return;
@@ -984,7 +1006,8 @@ unsafe fn draw_icon(
                 );
             }
         }
-        if path.stroke {
+        if path.stroke && path.stroke_width > 0.0 {
+            let stroke_width = path.stroke_width * scale;
             for segment in &path.segments {
                 let start = transform_icon_point(segment.start, origin_x, origin_y, scale);
                 let end = transform_icon_point(segment.end, origin_x, origin_y, scale);

@@ -19,6 +19,7 @@ pub struct IconPath {
     pub segments: Vec<IconSegment>,
     pub fill: bool,
     pub stroke: bool,
+    pub stroke_width: f32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -31,12 +32,17 @@ pub struct Icon {
 impl Icon {
     pub fn load(path: &Path) -> io::Result<Self> {
         let source = fs::read_to_string(path)?;
-        let (width, height) = parse_view_box(&source)?;
-        let svg_tag = root_tag(&source)?;
+        Self::from_svg(&source)
+    }
+
+    pub fn from_svg(source: &str) -> io::Result<Self> {
+        let (width, height) = parse_view_box(source)?;
+        let svg_tag = root_tag(source)?;
         let root_fill = attribute(svg_tag, "fill");
         let root_stroke = attribute(svg_tag, "stroke");
+        let root_stroke_width = attribute(svg_tag, "stroke-width");
         let mut paths = Vec::new();
-        let mut remaining = source.as_str();
+        let mut remaining = source;
         while let Some(index) = remaining.find("<path") {
             remaining = &remaining[index..];
             let end = remaining.find('>').ok_or_else(|| {
@@ -51,10 +57,24 @@ impl Icon {
                 .or(root_stroke)
                 .unwrap_or("none")
                 != "none";
+            let stroke_width = attribute(path_tag, "stroke-width")
+                .or(root_stroke_width)
+                .unwrap_or("1")
+                .parse::<f32>()
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid SVG stroke width")
+                })?;
+            if stroke_width < 0.0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "SVG stroke width must not be negative",
+                ));
+            }
             paths.push(IconPath {
                 segments: parse_path(data)?,
                 fill,
                 stroke,
+                stroke_width,
             });
             remaining = &remaining[end + 1..];
         }
@@ -508,5 +528,23 @@ mod tests {
 
         let outlined = Icon::load(&directory.join("fullscreen.svg")).unwrap();
         assert!(outlined.paths.iter().all(|path| !path.fill && path.stroke));
+        assert!(
+            outlined
+                .paths
+                .iter()
+                .all(|path| (path.stroke_width - 1.8).abs() < f32::EPSILON)
+        );
+    }
+
+    #[test]
+    fn parses_embedded_svg_source_and_path_stroke_override() {
+        let icon = Icon::from_svg(
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+                <path d="M 2 2 L 22 22" stroke-width="0.8" />
+            </svg>"#,
+        )
+        .unwrap();
+        assert_eq!((icon.width, icon.height), (24.0, 24.0));
+        assert!((icon.paths[0].stroke_width - 0.8).abs() < f32::EPSILON);
     }
 }
