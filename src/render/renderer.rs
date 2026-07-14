@@ -72,6 +72,8 @@ const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
 const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
 const APP_TITLE: &str = "PurePic 图片查看器";
 const TITLE_TEXT_LEFT_DIP: f32 = 176.0;
+const STATUS_TEXT_LEFT_DIP: f32 = 128.0;
+const STATUS_TEXT_RIGHT_RESERVED_DIP: f32 = 422.0;
 const NAVIGATION_BUTTON_WIDTH_DIP: f32 = 36.0;
 const NAVIGATION_BUTTON_HEIGHT_DIP: f32 = 64.0;
 const NAVIGATION_EDGE_INSET_DIP: f32 = 16.0;
@@ -400,10 +402,11 @@ impl Renderer {
             layout.canvas.width,
             48.0,
         );
+        let status_text_x = layout.status_bar.x + STATUS_TEXT_LEFT_DIP;
         let status_left = RectF::new(
-            layout.status_bar.x + 112.0,
+            status_text_x,
             layout.status_bar.y,
-            (layout.status_bar.width - 534.0).max(0.0),
+            (layout.status_bar.right() - status_text_x - STATUS_TEXT_RIGHT_RESERVED_DIP).max(0.0),
             layout.status_bar.height,
         );
         let controls = StatusControlsLayout::compute(layout.status_bar);
