@@ -1609,12 +1609,9 @@ impl Renderer {
                     &self.primary_text_brush
                 },
             );
-            let dock_icon_rect = RectF::new(
-                controls.dock_menu.x + 4.0,
-                controls.dock_menu.y + 7.0,
-                18.0,
-                18.0,
-            );
+            let dock_content_x =
+                controls.dock_menu.x + (controls.dock_menu.width - 32.0).max(0.0) * 0.5;
+            let dock_icon_rect = RectF::new(dock_content_x, controls.dock_menu.y + 7.0, 18.0, 18.0);
             draw_icon(
                 &self.context,
                 &self.d2d_factory,
@@ -1623,7 +1620,7 @@ impl Renderer {
                 &self.primary_text_brush,
             );
             let chevron = RectF::new(
-                controls.dock_menu.right() - 20.0,
+                dock_content_x + 20.0,
                 controls.dock_menu.y + (controls.dock_menu.height - 12.0) * 0.5,
                 12.0,
                 12.0,
@@ -2196,7 +2193,7 @@ impl Renderer {
 
     fn zoom_menu_rect(&self, button: RectF) -> RectF {
         let height = ZOOM_CHOICES.len() as f32 * 30.0;
-        RectF::new(button.right() - 88.0, button.y - height - 6.0, 88.0, height)
+        RectF::new(button.x, button.y - height - 6.0, 88.0, height)
     }
 
     fn dock_menu_rect(&self, button: RectF) -> RectF {
