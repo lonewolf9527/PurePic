@@ -47,8 +47,13 @@ mod tests {
         let icons = IconSet::load();
         assert!(!icons.app.paths.is_empty());
         for icon in [&icons.context_register, &icons.context_unregister] {
-            assert_eq!((icon.width, icon.height), (1024.0, 1024.0));
-            assert!(icon.paths.iter().all(|path| path.fill && !path.stroke));
+            assert_eq!((icon.width, icon.height), (24.0, 24.0));
+            assert!(icon.paths.iter().all(|path| !path.fill && path.stroke));
+            assert!(
+                icon.paths
+                    .iter()
+                    .all(|path| (path.stroke_width - 1.6).abs() < f32::EPSILON)
+            );
         }
         for icon in [
             icons.window_minimize,
