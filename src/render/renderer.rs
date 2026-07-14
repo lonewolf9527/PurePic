@@ -728,7 +728,7 @@ impl Renderer {
                 } else {
                     &self.icons.context_register
                 },
-                centered_square(button, 18.0),
+                centered_square(button, 24.0),
                 &self.primary_text_brush,
             );
         }
