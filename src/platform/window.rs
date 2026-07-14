@@ -246,7 +246,7 @@ unsafe extern "system" fn window_proc(
         WM_ERASEBKGND => LRESULT(1),
         WM_GETMINMAXINFO => {
             let bounds = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
-            enforce_minimum_window_size(bounds);
+            enforce_window_bounds(hwnd, bounds);
             LRESULT(0)
         }
         WM_SETCURSOR if (lparam.0 as u32 & 0xFFFF) == HTCLIENT => {
@@ -293,10 +293,10 @@ unsafe extern "system" fn window_proc(
                         }
                     }
                     PointerAction::OpenThumbnail(index) => {
-                        if let Some(path) = state.renderer.thumbnail_path(index) {
-                            state.renderer.select_thumbnail(index);
-                            request_image(hwnd, state, path);
-                        }
+                        open_thumbnail(hwnd, state, index);
+                    }
+                    PointerAction::ThumbnailPreferencesChanged => {
+                        save_thumbnail_preferences(state);
                     }
                     PointerAction::None => {}
                 }
@@ -391,6 +391,20 @@ unsafe extern "system" fn window_proc(
             let mut fullscreen_request = None;
             if let Some(state) = unsafe { state_mut(hwnd) } {
                 match wparam.0 as u32 {
+                    0x25 => {
+                        if let Some(index) = state.renderer.adjacent_thumbnail_index(-1) {
+                            open_thumbnail(hwnd, state, index);
+                            queue_thumbnail_requests(state);
+                            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                        }
+                    }
+                    0x27 => {
+                        if let Some(index) = state.renderer.adjacent_thumbnail_index(1) {
+                            open_thumbnail(hwnd, state, index);
+                            queue_thumbnail_requests(state);
+                            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                        }
+                    }
                     0x7A => {
                         fullscreen_request = Some(!state.fullscreen);
                     }
@@ -597,13 +611,11 @@ unsafe extern "system" fn window_proc(
         }
         WM_DESTROY => {
             let _ = unsafe { KillTimer(Some(hwnd), NAVIGATION_TIMER_ID) };
-            if let Some(state) = unsafe { state_mut(hwnd) }
-                && let Some(saved) = saved_window_state(hwnd, state)
-            {
-                let _ = registry::save_window_state(saved);
-                let (visible, dock) = state.renderer.thumbnail_preferences();
-                let _ =
-                    registry::save_thumbnail_preferences(ThumbnailPreferences { visible, dock });
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                if let Some(saved) = saved_window_state(hwnd, state) {
+                    let _ = registry::save_window_state(saved);
+                }
+                save_thumbnail_preferences(state);
             }
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
@@ -747,6 +759,18 @@ fn request_image(hwnd: HWND, state: &mut WindowState, path: PathBuf) {
     );
 }
 
+fn open_thumbnail(hwnd: HWND, state: &mut WindowState, index: usize) {
+    if let Some(path) = state.renderer.thumbnail_path(index) {
+        state.renderer.select_thumbnail(index);
+        request_image(hwnd, state, path);
+    }
+}
+
+fn save_thumbnail_preferences(state: &WindowState) {
+    let (visible, dock) = state.renderer.thumbnail_preferences();
+    let _ = registry::save_thumbnail_preferences(ThumbnailPreferences { visible, dock });
+}
+
 fn queue_thumbnail_requests(state: &mut WindowState) {
     let requests = state.renderer.thumbnail_requests();
     let tasks: Vec<_> = requests
@@ -805,6 +829,25 @@ fn enforce_minimum_window_size(bounds: &mut MINMAXINFO) {
     bounds.ptMinTrackSize.y = MINIMUM_HEIGHT;
 }
 
+fn enforce_window_bounds(hwnd: HWND, bounds: &mut MINMAXINFO) {
+    enforce_minimum_window_size(bounds);
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut monitor_info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() {
+        apply_maximized_work_area(bounds, monitor_info.rcMonitor, monitor_info.rcWork);
+    }
+}
+
+fn apply_maximized_work_area(bounds: &mut MINMAXINFO, monitor: RECT, work_area: RECT) {
+    bounds.ptMaxPosition.x = work_area.left - monitor.left;
+    bounds.ptMaxPosition.y = work_area.top - monitor.top;
+    bounds.ptMaxSize.x = work_area.right - work_area.left;
+    bounds.ptMaxSize.y = work_area.bottom - work_area.top;
+}
+
 fn saved_window_state(hwnd: HWND, state: &WindowState) -> Option<SavedWindowState> {
     let placement = if state.fullscreen {
         state.windowed_placement?
@@ -849,6 +892,30 @@ mod tests {
         enforce_minimum_window_size(&mut bounds);
         assert_eq!(bounds.ptMinTrackSize.x, 890);
         assert_eq!(bounds.ptMinTrackSize.y, 890);
+    }
+
+    #[test]
+    fn maximized_window_uses_the_monitor_work_area() {
+        let mut bounds = MINMAXINFO::default();
+        apply_maximized_work_area(
+            &mut bounds,
+            RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1080,
+            },
+            RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1040,
+            },
+        );
+        assert_eq!(bounds.ptMaxPosition.x, 0);
+        assert_eq!(bounds.ptMaxPosition.y, 0);
+        assert_eq!(bounds.ptMaxSize.x, 1920);
+        assert_eq!(bounds.ptMaxSize.y, 1040);
     }
 
     #[test]

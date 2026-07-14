@@ -60,8 +60,8 @@ const MENU_BACKGROUND: D2D1_COLOR_F = color(0x2E, 0x2E, 0x2E);
 const MENU_HOVER_BACKGROUND: D2D1_COLOR_F = color(0x3A, 0x3A, 0x3A);
 const MENU_SELECTED_BACKGROUND: D2D1_COLOR_F = color(0x17, 0x6F, 0x71);
 const THUMBNAIL_BACKGROUND: D2D1_COLOR_F = color_alpha(0x27, 0x27, 0x27, 0.40);
-const THUMBNAIL_PLACEHOLDER: D2D1_COLOR_F = color_alpha(0x17, 0x19, 0x1A, 0.72);
-const THUMBNAIL_HOVER: D2D1_COLOR_F = color(0x4A, 0x5A, 0x61);
+const THUMBNAIL_PLACEHOLDER: D2D1_COLOR_F = color_alpha(0x2B, 0x2E, 0x30, 0.62);
+const THUMBNAIL_HOVER: D2D1_COLOR_F = color(0x8B, 0x99, 0xA0);
 const NAVIGATION_BACKGROUND: D2D1_COLOR_F = color_alpha(0x22, 0x25, 0x27, 0.88);
 const NAVIGATION_HOVER: D2D1_COLOR_F = color_alpha(0x38, 0x3E, 0x41, 0.94);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
@@ -77,7 +77,7 @@ const NAVIGATION_BUTTON_HEIGHT_DIP: f32 = 64.0;
 const NAVIGATION_EDGE_INSET_DIP: f32 = 16.0;
 const NAVIGATION_PROXIMITY_X_DIP: f32 = 28.0;
 const NAVIGATION_PROXIMITY_Y_DIP: f32 = 56.0;
-const NAVIGATION_SHOW_DELAY: Duration = Duration::from_millis(240);
+const NAVIGATION_SHOW_DELAY: Duration = Duration::from_millis(120);
 const NAVIGATION_FADE_IN_SECONDS: f32 = 0.14;
 const NAVIGATION_FADE_OUT_SECONDS: f32 = 0.32;
 
@@ -220,6 +220,7 @@ pub enum PointerAction {
     BeginPan,
     ToggleFullscreen,
     ToggleContextMenu,
+    ThumbnailPreferencesChanged,
     OpenThumbnail(usize),
 }
 
@@ -707,7 +708,7 @@ impl Renderer {
                 self.dock_menu_open = false;
                 self.dock_menu_hot = None;
                 self.center_selected_thumbnail();
-                return PointerAction::None;
+                return PointerAction::ThumbnailPreferencesChanged;
             }
             self.dock_menu_open = false;
             self.dock_menu_hot = None;
@@ -731,7 +732,7 @@ impl Renderer {
                 self.thumbnail_visible = !self.thumbnail_visible;
                 self.thumbnail_scroll_drag = None;
                 self.center_selected_thumbnail();
-                return PointerAction::None;
+                return PointerAction::ThumbnailPreferencesChanged;
             }
             Some(ThumbnailControl::DockMenu) => {
                 self.dock_menu_open = true;
@@ -1036,6 +1037,17 @@ impl Renderer {
             .map(|item| item.path.clone())
     }
 
+    pub fn adjacent_thumbnail_index(&self, direction: i32) -> Option<usize> {
+        let selected = self.thumbnail_selected?;
+        if direction < 0 {
+            selected.checked_sub(1)
+        } else if direction > 0 {
+            (selected + 1 < self.thumbnail_items.len()).then_some(selected + 1)
+        } else {
+            None
+        }
+    }
+
     pub fn select_thumbnail(&mut self, index: usize) {
         if index < self.thumbnail_items.len() {
             self.thumbnail_selected = Some(index);
@@ -1332,12 +1344,6 @@ impl Renderer {
             let frame = centered_square(cell, THUMBNAIL_CONTENT_DIP + 4.0);
             let content = centered_square(cell, THUMBNAIL_CONTENT_DIP);
             unsafe {
-                if hovered && !selected {
-                    self.context.FillRoundedRectangle(
-                        &to_d2d_rounded_rect(frame, 5.0),
-                        &self.thumbnail_hover_brush,
-                    );
-                }
                 self.context.FillRoundedRectangle(
                     &to_d2d_rounded_rect(content, 4.0),
                     &self.thumbnail_placeholder_brush,
@@ -1403,6 +1409,15 @@ impl Renderer {
                         &to_d2d_rounded_rect(frame, 5.0),
                         &self.accent_brush,
                         1.5,
+                        None,
+                    );
+                }
+            } else if hovered {
+                unsafe {
+                    self.context.DrawRoundedRectangle(
+                        &to_d2d_rounded_rect(frame, 5.0),
+                        &self.thumbnail_hover_brush,
+                        1.25,
                         None,
                     );
                 }
