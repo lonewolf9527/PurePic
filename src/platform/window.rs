@@ -18,7 +18,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, GetSystemMetricsForDpi,
+    SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent,
@@ -27,14 +28,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
     DispatchMessageW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW,
     GetWindowLongPtrW, GetWindowPlacement, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, IDC_ARROW,
-    IDC_HAND, IsZoomed, KillTimer, LoadCursorW, LoadIconW, MINMAXINFO, MSG, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SW_SHOW,
-    SW_SHOWMAXIMIZED, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_APP, WM_DESTROY, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE,
-    WM_PAINT, WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    IDC_HAND, IsZoomed, KillTimer, LoadCursorW, LoadIconW, MINMAXINFO, MSG, NCCALCSIZE_PARAMS,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE,
+    SC_RESTORE, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME, SW_SHOW, SW_SHOWMAXIMIZED,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetTimer,
+    SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCCALCSIZE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT,
+    WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    WS_THICKFRAME,
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
@@ -436,6 +439,12 @@ unsafe extern "system" fn window_proc(
         }
         WM_NCCALCSIZE => {
             if wparam.0 != 0 {
+                let parameters = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
+                adjust_maximized_client_rect(hwnd, &mut parameters.rgrc[0]);
+                return LRESULT(0);
+            }
+            let rect = unsafe { &mut *(lparam.0 as *mut RECT) };
+            if adjust_maximized_client_rect(hwnd, rect) {
                 return LRESULT(0);
             }
             unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
@@ -848,6 +857,27 @@ fn apply_maximized_work_area(bounds: &mut MINMAXINFO, monitor: RECT, work_area: 
     bounds.ptMaxSize.y = work_area.bottom - work_area.top;
 }
 
+fn adjust_maximized_client_rect(hwnd: HWND, rect: &mut RECT) -> bool {
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32;
+    if !unsafe { IsZoomed(hwnd) }.as_bool() || style & WS_THICKFRAME.0 == 0 {
+        return false;
+    }
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(1);
+    let frame_x = unsafe { GetSystemMetricsForDpi(SM_CXFRAME, dpi) }
+        + unsafe { GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) };
+    let frame_y = unsafe { GetSystemMetricsForDpi(SM_CYFRAME, dpi) }
+        + unsafe { GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) };
+    inset_client_rect(rect, frame_x, frame_y);
+    true
+}
+
+fn inset_client_rect(rect: &mut RECT, frame_x: i32, frame_y: i32) {
+    rect.left += frame_x;
+    rect.top += frame_y;
+    rect.right -= frame_x;
+    rect.bottom -= frame_y;
+}
+
 fn saved_window_state(hwnd: HWND, state: &WindowState) -> Option<SavedWindowState> {
     let placement = if state.fullscreen {
         state.windowed_placement?
@@ -916,6 +946,26 @@ mod tests {
         assert_eq!(bounds.ptMaxPosition.y, 0);
         assert_eq!(bounds.ptMaxSize.x, 1920);
         assert_eq!(bounds.ptMaxSize.y, 1040);
+    }
+
+    #[test]
+    fn maximized_client_excludes_the_invisible_resize_frame() {
+        let mut rect = RECT {
+            left: -12,
+            top: -12,
+            right: 3852,
+            bottom: 2076,
+        };
+        inset_client_rect(&mut rect, 12, 12);
+        assert_eq!(
+            rect,
+            RECT {
+                left: 0,
+                top: 0,
+                right: 3840,
+                bottom: 2064,
+            }
+        );
     }
 
     #[test]
