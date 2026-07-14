@@ -1,5 +1,8 @@
 use std::mem::size_of;
 
+use purepic::ui::chrome::{
+    CAPTION_BUTTON_WIDTH_DIP, TITLE_ACTION_BUTTON_WIDTH_DIP, TITLE_ACTION_RIGHT_GAP_DIP,
+};
 use purepic::ui::layout::TITLE_BAR_HEIGHT_DIP;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{
@@ -14,8 +17,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SM_CXPADDEDBORDER, SM_CYFRAME,
 };
 use windows::core::{BOOL, Result};
-
-const CAPTION_BUTTON_WIDTH_DIP: i32 = 46;
 
 pub fn apply_dwm_attributes(hwnd: HWND) -> Result<()> {
     let dark_mode = BOOL(1);
@@ -89,7 +90,12 @@ pub fn non_client_hit_test(hwnd: HWND, lparam: LPARAM) -> u32 {
         return HTCLIENT;
     }
 
-    let button_width = scale_dip(CAPTION_BUTTON_WIDTH_DIP, dpi);
+    let button_width = scale_dip(CAPTION_BUTTON_WIDTH_DIP as i32, dpi);
+    let action_right = width - button_width * 3 - scale_dip(TITLE_ACTION_RIGHT_GAP_DIP as i32, dpi);
+    let action_left = action_right - scale_dip(TITLE_ACTION_BUTTON_WIDTH_DIP as i32, dpi);
+    if x >= action_left && x < action_right {
+        return HTCLIENT;
+    }
     if x >= width - button_width {
         HTCLOSE
     } else if x >= width - button_width * 2 {

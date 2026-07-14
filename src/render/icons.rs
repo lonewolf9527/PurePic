@@ -2,6 +2,8 @@ use purepic::ui::icon::Icon;
 
 pub struct IconSet {
     pub app: Icon,
+    pub context_register: Icon,
+    pub context_unregister: Icon,
     pub window_minimize: Icon,
     pub window_maximize: Icon,
     pub window_restore: Icon,
@@ -17,6 +19,8 @@ impl IconSet {
     pub fn load() -> Self {
         Self {
             app: load(include_str!("../../Assets/icons/app.svg")),
+            context_register: load(include_str!("../../Assets/icons/context-register.svg")),
+            context_unregister: load(include_str!("../../Assets/icons/context-unregister.svg")),
             window_minimize: load(include_str!("../../Assets/icons/window-minimize.svg")),
             window_maximize: load(include_str!("../../Assets/icons/window-maximize.svg")),
             window_restore: load(include_str!("../../Assets/icons/window-restore.svg")),

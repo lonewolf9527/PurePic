@@ -4,6 +4,7 @@ use std::sync::mpsc::{Receiver, channel};
 
 use crate::image::{DecodedImage, create_demo_image, decode_preview};
 use crate::platform::chrome::{apply_dwm_attributes, non_client_hit_test};
+use crate::platform::registry::{self, SavedWindowState};
 use crate::render::{PointerAction, Renderer};
 use purepic::ui::chrome::CaptionButton;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -24,13 +25,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW,
     GetWindowLongPtrW, GetWindowPlacement, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, IDC_ARROW,
     IDC_HAND, IsZoomed, LoadCursorW, LoadIconW, MINMAXINFO, MSG, PostMessageW, PostQuitMessage,
-    RegisterClassExW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SW_SHOW, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetWindowLongPtrW,
-    SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
-    WINDOWPLACEMENT, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCDESTROY,
-    WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_SIZE,
-    WM_SYSCOMMAND, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    RegisterClassExW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor,
+    SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCALCSIZE,
+    WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SETCURSOR,
+    WM_SIZE, WM_SYSCOMMAND, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
@@ -49,6 +50,7 @@ struct WindowState {
     requested_path: Option<PathBuf>,
     slider_dragging: bool,
     image_dragging: bool,
+    context_menu_registered: bool,
     fullscreen: bool,
     windowed_placement: Option<WINDOWPLACEMENT>,
 }
@@ -59,6 +61,13 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
 
     let image_path = image_path.or_else(default_demo_path);
+    let saved_window = registry::load_window_state();
+    let initial_width = saved_window
+        .map(|state| state.width.clamp(MINIMUM_WIDTH as u32, u16::MAX as u32) as i32)
+        .unwrap_or(INITIAL_WIDTH);
+    let initial_height = saved_window
+        .map(|state| state.height.clamp(MINIMUM_HEIGHT as u32, u16::MAX as u32) as i32)
+        .unwrap_or(INITIAL_HEIGHT);
     let module = unsafe { GetModuleHandleW(None)? };
     let instance = HINSTANCE(module.0);
     let class_name = w!("PurePic.MainWindow");
@@ -89,8 +98,8 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            INITIAL_WIDTH,
-            INITIAL_HEIGHT,
+            initial_width,
+            initial_height,
             None,
             None,
             Some(instance),
@@ -124,12 +133,15 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     } else {
         renderer.set_image(create_demo_image())?;
     }
+    let context_menu_registered = registry::is_context_menu_registered();
+    renderer.set_context_menu_registered(context_menu_registered);
     let state = Box::new(WindowState {
         renderer,
         image_receiver,
         requested_path: image_path.clone(),
         slider_dragging: false,
         image_dragging: false,
+        context_menu_registered,
         fullscreen: false,
         windowed_placement: None,
     });
@@ -148,7 +160,12 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     }
 
     unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        let show_command = if saved_window.is_some_and(|state| state.maximized) {
+            SW_SHOWMAXIMIZED
+        } else {
+            SW_SHOW
+        };
+        let _ = ShowWindow(hwnd, show_command);
         let _ = UpdateWindow(hwnd);
     }
 
@@ -225,6 +242,13 @@ unsafe extern "system" fn window_proc(
                     }
                     PointerAction::ToggleFullscreen => {
                         fullscreen_request = Some(!state.fullscreen);
+                    }
+                    PointerAction::ToggleContextMenu => {
+                        let registered = !state.context_menu_registered;
+                        if registry::set_context_menu_registered(registered).is_ok() {
+                            state.context_menu_registered = registered;
+                            state.renderer.set_context_menu_registered(registered);
+                        }
                     }
                     PointerAction::None => {}
                 }
@@ -411,6 +435,11 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
+            if let Some(state) = unsafe { state_mut(hwnd) }
+                && let Some(saved) = saved_window_state(hwnd, state)
+            {
+                let _ = registry::save_window_state(saved);
+            }
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
@@ -554,6 +583,40 @@ fn enforce_minimum_window_size(bounds: &mut MINMAXINFO) {
     bounds.ptMinTrackSize.y = MINIMUM_HEIGHT;
 }
 
+fn saved_window_state(hwnd: HWND, state: &WindowState) -> Option<SavedWindowState> {
+    let placement = if state.fullscreen {
+        state.windowed_placement?
+    } else {
+        let mut placement = WINDOWPLACEMENT {
+            length: size_of::<WINDOWPLACEMENT>() as u32,
+            ..Default::default()
+        };
+        unsafe { GetWindowPlacement(hwnd, &mut placement) }.ok()?;
+        placement
+    };
+    Some(saved_window_state_from_placement(
+        placement,
+        if state.fullscreen {
+            placement.showCmd == SW_SHOWMAXIMIZED.0 as u32
+        } else {
+            unsafe { IsZoomed(hwnd) }.as_bool()
+        },
+    ))
+}
+
+fn saved_window_state_from_placement(
+    placement: WINDOWPLACEMENT,
+    maximized: bool,
+) -> SavedWindowState {
+    SavedWindowState {
+        width: (placement.rcNormalPosition.right - placement.rcNormalPosition.left)
+            .max(MINIMUM_WIDTH) as u32,
+        height: (placement.rcNormalPosition.bottom - placement.rcNormalPosition.top)
+            .max(MINIMUM_HEIGHT) as u32,
+        maximized,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,5 +627,26 @@ mod tests {
         enforce_minimum_window_size(&mut bounds);
         assert_eq!(bounds.ptMinTrackSize.x, 890);
         assert_eq!(bounds.ptMinTrackSize.y, 890);
+    }
+
+    #[test]
+    fn saved_window_state_uses_normal_size_and_maximized_flag() {
+        let placement = WINDOWPLACEMENT {
+            rcNormalPosition: RECT {
+                left: 100,
+                top: 200,
+                right: 1700,
+                bottom: 1200,
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            saved_window_state_from_placement(placement, true),
+            SavedWindowState {
+                width: 1600,
+                height: 1000,
+                maximized: true,
+            }
+        );
     }
 }

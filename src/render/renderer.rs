@@ -1,6 +1,8 @@
 use crate::image::DecodedImage;
 use crate::render::icons::IconSet;
-use purepic::ui::chrome::CaptionButton;
+use purepic::ui::chrome::{
+    CAPTION_BUTTON_WIDTH_DIP, CaptionButton, title_action_button_rect, title_action_separator_x,
+};
 use purepic::ui::controls::{StatusControl, StatusControlsLayout};
 use purepic::ui::icon::Icon;
 use purepic::ui::layout::{LayoutInput, RectF, WindowLayout, compute_layout};
@@ -55,8 +57,6 @@ const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
 const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
 const APP_TITLE: &str = "PurePic 图片查看器";
 const TITLE_TEXT_LEFT_DIP: f32 = 176.0;
-const CAPTION_BUTTON_WIDTH_DIP: f32 = 46.0;
-const CAPTION_BUTTON_COUNT: f32 = 3.0;
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -95,6 +95,8 @@ pub struct Renderer {
     width_px: u32,
     height_px: u32,
     caption_hot: CaptionButton,
+    title_action_hot: bool,
+    context_menu_registered: bool,
     maximized: bool,
     title: String,
     status: String,
@@ -125,6 +127,7 @@ pub enum PointerAction {
     BeginSlider,
     BeginPan,
     ToggleFullscreen,
+    ToggleContextMenu,
 }
 
 impl Renderer {
@@ -226,6 +229,8 @@ impl Renderer {
             width_px,
             height_px,
             caption_hot: CaptionButton::None,
+            title_action_hot: false,
+            context_menu_registered: false,
             maximized: false,
             title: "PurePic".to_owned(),
             status: "— × —     0 B".to_owned(),
@@ -310,6 +315,7 @@ impl Renderer {
                     );
                 }
                 self.draw_title_brand(layout.title_bar);
+                self.draw_title_action(layout.title_bar);
                 self.draw_caption_buttons(layout.title_bar);
                 draw_text(
                     &self.context,
@@ -323,6 +329,7 @@ impl Renderer {
                     self.draw_zoom_menu(controls.zoom_menu, layout.canvas);
                 }
                 self.draw_status_tooltip(controls, layout.canvas);
+                self.draw_title_action_tooltip(layout.title_bar, layout.canvas);
             }
 
             self.context.EndDraw(None, None)?;
@@ -368,6 +375,10 @@ impl Renderer {
         self.caption_hot = button;
     }
 
+    pub fn set_context_menu_registered(&mut self, registered: bool) {
+        self.context_menu_registered = registered;
+    }
+
     pub fn set_maximized(&mut self, maximized: bool) {
         self.maximized = maximized;
     }
@@ -377,6 +388,7 @@ impl Renderer {
         self.zoom_menu_open = false;
         self.status_hot = None;
         self.zoom_menu_hot = None;
+        self.title_action_hot = false;
     }
 
     pub fn close_zoom_menu(&mut self) -> bool {
@@ -400,18 +412,26 @@ impl Renderer {
         } else {
             None
         };
-        if self.status_hot == status_hot && self.zoom_menu_hot == zoom_menu_hot {
+        let title_action_hot =
+            !self.fullscreen && title_action_button_rect(layout.title_bar).contains(x, y);
+        if self.status_hot == status_hot
+            && self.zoom_menu_hot == zoom_menu_hot
+            && self.title_action_hot == title_action_hot
+        {
             return false;
         }
         self.status_hot = status_hot;
         self.zoom_menu_hot = zoom_menu_hot;
+        self.title_action_hot = title_action_hot;
         true
     }
 
     pub fn clear_pointer_hot(&mut self) -> bool {
-        let changed = self.status_hot.is_some() || self.zoom_menu_hot.is_some();
+        let changed =
+            self.status_hot.is_some() || self.zoom_menu_hot.is_some() || self.title_action_hot;
         self.status_hot = None;
         self.zoom_menu_hot = None;
+        self.title_action_hot = false;
         changed
     }
 
@@ -420,6 +440,9 @@ impl Renderer {
         let layout = self.current_layout();
         if self.fullscreen {
             return self.begin_pan(x, y, layout.canvas);
+        }
+        if title_action_button_rect(layout.title_bar).contains(x, y) {
+            return PointerAction::ToggleContextMenu;
         }
         let controls = StatusControlsLayout::compute(layout.status_bar);
 
@@ -675,6 +698,68 @@ impl Renderer {
                 APP_TITLE,
                 &self.brand_format,
                 label,
+                &self.primary_text_brush,
+            );
+        }
+    }
+
+    unsafe fn draw_title_action(&self, title_bar: RectF) {
+        let button = title_action_button_rect(title_bar);
+        if self.title_action_hot {
+            unsafe {
+                self.context
+                    .FillRectangle(&to_d2d_rect(button), &self.caption_hover_brush)
+            };
+        }
+        let separator = RectF::new(
+            title_action_separator_x(title_bar) - 0.5,
+            title_bar.y + 10.0,
+            1.0,
+            (title_bar.height - 20.0).max(0.0),
+        );
+        unsafe {
+            self.context
+                .FillRectangle(&to_d2d_rect(separator), &self.muted_text_brush);
+            draw_icon(
+                &self.context,
+                &self.d2d_factory,
+                if self.context_menu_registered {
+                    &self.icons.context_unregister
+                } else {
+                    &self.icons.context_register
+                },
+                centered_square(button, 18.0),
+                &self.primary_text_brush,
+            );
+        }
+    }
+
+    unsafe fn draw_title_action_tooltip(&self, title_bar: RectF, canvas: RectF) {
+        if !self.title_action_hot {
+            return;
+        }
+        let button = title_action_button_rect(title_bar);
+        let width = 132.0;
+        let rect = RectF::new(
+            (button.x + (button.width - width) * 0.5)
+                .clamp(canvas.x + 8.0, canvas.right() - width - 8.0),
+            title_bar.bottom() + 8.0,
+            width,
+            32.0,
+        );
+        let label = if self.context_menu_registered {
+            "取消图片右键菜单"
+        } else {
+            "注册图片右键菜单"
+        };
+        unsafe {
+            self.context
+                .FillRoundedRectangle(&to_d2d_rounded_rect(rect, 6.0), &self.title_brush);
+            draw_text(
+                &self.context,
+                label,
+                &self.tooltip_format,
+                rect,
                 &self.primary_text_brush,
             );
         }
@@ -1037,7 +1122,7 @@ fn centered_square(rect: RectF, size: f32) -> RectF {
 
 fn title_text_rect(title_bar: RectF) -> RectF {
     let left = title_bar.x + TITLE_TEXT_LEFT_DIP;
-    let right = title_bar.right() - CAPTION_BUTTON_WIDTH_DIP * CAPTION_BUTTON_COUNT;
+    let right = title_action_button_rect(title_bar).x - 8.0;
     RectF::new(left, title_bar.y, (right - left).max(0.0), title_bar.height)
 }
 
@@ -1319,7 +1404,7 @@ mod tests {
         let bar = RectF::new(0.0, 0.0, 890.0, 44.0);
         let text = title_text_rect(bar);
         assert_eq!(text.x, 176.0);
-        assert_eq!(text.right(), 752.0);
+        assert_eq!(text.right(), 696.0);
 
         let narrow = title_text_rect(RectF::new(0.0, 0.0, 300.0, 44.0));
         assert_eq!(narrow.width, 0.0);
