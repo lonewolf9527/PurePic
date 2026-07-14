@@ -53,8 +53,10 @@ const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
 const CAPTION_HOVER: D2D1_COLOR_F = color(0x31, 0x3A, 0x3F);
 const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
 const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
-const PAN_EDGE_PADDING_DIP: f32 = 24.0;
 const APP_TITLE: &str = "PurePic 图片查看器";
+const TITLE_TEXT_LEFT_DIP: f32 = 176.0;
+const CAPTION_BUTTON_WIDTH_DIP: f32 = 46.0;
+const CAPTION_BUTTON_COUNT: f32 = 3.0;
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -297,13 +299,16 @@ impl Renderer {
                     .FillRectangle(&to_d2d_rect(layout.title_bar), &self.title_brush);
                 self.context
                     .FillRectangle(&to_d2d_rect(layout.status_bar), &self.status_brush);
-                draw_text(
-                    &self.context,
-                    &self.title,
-                    &self.title_format,
-                    layout.title_bar,
-                    &self.primary_text_brush,
-                );
+                let title_text = title_text_rect(layout.title_bar);
+                if title_text.width > 0.0 {
+                    draw_text(
+                        &self.context,
+                        &self.title,
+                        &self.title_format,
+                        title_text,
+                        &self.primary_text_brush,
+                    );
+                }
                 self.draw_title_brand(layout.title_bar);
                 self.draw_caption_buttons(layout.title_bar);
                 draw_text(
@@ -582,23 +587,22 @@ impl Renderer {
     }
 
     unsafe fn draw_caption_buttons(&self, title_bar: RectF) {
-        const BUTTON_WIDTH: f32 = 46.0;
         let close = RectF::new(
-            (title_bar.right() - BUTTON_WIDTH).max(0.0),
+            (title_bar.right() - CAPTION_BUTTON_WIDTH_DIP).max(0.0),
             title_bar.y,
-            BUTTON_WIDTH.min(title_bar.width),
+            CAPTION_BUTTON_WIDTH_DIP.min(title_bar.width),
             title_bar.height,
         );
         let maximize = RectF::new(
-            (close.x - BUTTON_WIDTH).max(0.0),
+            (close.x - CAPTION_BUTTON_WIDTH_DIP).max(0.0),
             title_bar.y,
-            BUTTON_WIDTH.min(close.x),
+            CAPTION_BUTTON_WIDTH_DIP.min(close.x),
             title_bar.height,
         );
         let minimize = RectF::new(
-            (maximize.x - BUTTON_WIDTH).max(0.0),
+            (maximize.x - CAPTION_BUTTON_WIDTH_DIP).max(0.0),
             title_bar.y,
-            BUTTON_WIDTH.min(maximize.x),
+            CAPTION_BUTTON_WIDTH_DIP.min(maximize.x),
             title_bar.height,
         );
 
@@ -951,12 +955,7 @@ impl Renderer {
 
     fn zoom_menu_rect(&self, button: RectF) -> RectF {
         let height = ZOOM_CHOICES.len() as f32 * 30.0;
-        RectF::new(
-            button.right() - 104.0,
-            button.y - height - 6.0,
-            104.0,
-            height,
-        )
+        RectF::new(button.right() - 88.0, button.y - height - 6.0, 88.0, height)
     }
 
     fn apply_zoom_choice(&mut self, choice: ZoomChoice) {
@@ -1034,6 +1033,12 @@ fn centered_square(rect: RectF, size: f32) -> RectF {
         extent,
         extent,
     )
+}
+
+fn title_text_rect(title_bar: RectF) -> RectF {
+    let left = title_bar.x + TITLE_TEXT_LEFT_DIP;
+    let right = title_bar.right() - CAPTION_BUTTON_WIDTH_DIP * CAPTION_BUTTON_COUNT;
+    RectF::new(left, title_bar.y, (right - left).max(0.0), title_bar.height)
 }
 
 unsafe fn draw_icon(
@@ -1151,7 +1156,7 @@ fn constrain_pan_axis(pan: f32, image_extent: f32, canvas_extent: f32) -> f32 {
     if image_extent <= canvas_extent {
         return 0.0;
     }
-    let limit = (image_extent - canvas_extent) * 0.5 + PAN_EDGE_PADDING_DIP;
+    let limit = (image_extent - canvas_extent) * 0.5;
     pan.clamp(-limit, limit)
 }
 
@@ -1278,9 +1283,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn oversized_images_keep_padding_at_each_pan_limit() {
-        assert_eq!(constrain_pan_axis(1_000.0, 1200.0, 800.0), 224.0);
-        assert_eq!(constrain_pan_axis(-1_000.0, 1200.0, 800.0), -224.0);
+    fn oversized_images_stop_at_the_canvas_edge_without_padding() {
+        assert_eq!(constrain_pan_axis(1_000.0, 1200.0, 800.0), 200.0);
+        assert_eq!(constrain_pan_axis(-1_000.0, 1200.0, 800.0), -200.0);
     }
 
     #[test]
@@ -1307,5 +1312,16 @@ mod tests {
         );
         assert_eq!(zoom_choice_index_at(menu, 110.0, menu.bottom()), None);
         assert_eq!(zoom_choice_index_at(menu, menu.right(), 60.0), None);
+    }
+
+    #[test]
+    fn title_text_stays_between_brand_and_caption_buttons() {
+        let bar = RectF::new(0.0, 0.0, 890.0, 44.0);
+        let text = title_text_rect(bar);
+        assert_eq!(text.x, 176.0);
+        assert_eq!(text.right(), 752.0);
+
+        let narrow = title_text_rect(RectF::new(0.0, 0.0, 300.0, 44.0));
+        assert_eq!(narrow.width, 0.0);
     }
 }
