@@ -42,9 +42,8 @@ use windows::core::{Error, Interface, Result, w};
 use windows_numerics::Vector2;
 
 const BACKGROUND: D2D1_COLOR_F = color(0x20, 0x20, 0x20);
-const TITLE_BACKGROUND: D2D1_COLOR_F = color(0x18, 0x20, 0x24);
 const STATUS_BACKGROUND: D2D1_COLOR_F = color(0x27, 0x27, 0x27);
-const STATUS_CONTROL_BACKGROUND: D2D1_COLOR_F = color(0x27, 0x30, 0x35);
+const STATUS_CONTROL_BACKGROUND: D2D1_COLOR_F = color(0x34, 0x34, 0x34);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
 const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
 const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
@@ -52,7 +51,7 @@ const CAPTION_HOVER: D2D1_COLOR_F = color(0x31, 0x3A, 0x3F);
 const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
 const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
 const PAN_EDGE_PADDING_DIP: f32 = 24.0;
-const APP_TITLE: &str = "PurePic图片查看器";
+const APP_TITLE: &str = "PurePic 图片查看器";
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -174,7 +173,7 @@ impl Renderer {
         let message_format =
             create_text_format(&write_factory, 15.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
 
-        let title_brush = unsafe { context.CreateSolidColorBrush(&TITLE_BACKGROUND, None)? };
+        let title_brush = unsafe { context.CreateSolidColorBrush(&STATUS_BACKGROUND, None)? };
         let status_brush = unsafe { context.CreateSolidColorBrush(&STATUS_BACKGROUND, None)? };
         let status_control_brush =
             unsafe { context.CreateSolidColorBrush(&STATUS_CONTROL_BACKGROUND, None)? };
@@ -465,6 +464,19 @@ impl Renderer {
         self.pan_last_position = None;
     }
 
+    pub fn shows_pan_cursor(&self, x_px: i32, y_px: i32) -> bool {
+        let (x, y) = self.point_to_dip(x_px, y_px);
+        let canvas = self.current_layout().canvas;
+        let Some((width, height)) = self.image_size(canvas) else {
+            return false;
+        };
+        if !image_exceeds_canvas(canvas, width, height) {
+            return false;
+        }
+        self.image_destination(canvas)
+            .is_some_and(|destination| destination.contains(x, y))
+    }
+
     pub fn set_loading(&mut self, path: &std::path::Path) {
         self.title = display_file_name(path);
         self.message = "Loading image…".to_owned();
@@ -597,7 +609,7 @@ impl Renderer {
                 &self.context,
                 &self.d2d_factory,
                 &self.icons.window_minimize,
-                inset(minimize, 10.0),
+                centered_square(minimize, 16.0),
                 &self.primary_text_brush,
             );
             draw_icon(
@@ -608,14 +620,14 @@ impl Renderer {
                 } else {
                     &self.icons.window_maximize
                 },
-                inset(maximize, 10.0),
+                centered_square(maximize, 16.0),
                 &self.primary_text_brush,
             );
             draw_icon(
                 &self.context,
                 &self.d2d_factory,
                 &self.icons.window_close,
-                inset(close, 10.0),
+                centered_square(close, 16.0),
                 &self.primary_text_brush,
             );
         }
@@ -651,7 +663,7 @@ impl Renderer {
         let icon_inset = 8.0;
         unsafe {
             self.context.FillRoundedRectangle(
-                &to_d2d_rounded_rect(controls.zoom_menu, 6.0),
+                &to_d2d_rounded_rect(controls.zoom_menu, 8.0),
                 &self.status_control_brush,
             );
             if let Some(control) = self.status_hot {
@@ -757,7 +769,7 @@ impl Renderer {
         let menu = self.zoom_menu_rect(button);
         unsafe {
             self.context
-                .FillRoundedRectangle(&to_d2d_rounded_rect(menu, 8.0), &self.title_brush)
+                .FillRoundedRectangle(&to_d2d_rounded_rect(menu, 8.0), &self.status_control_brush)
         };
         let current = self.current_zoom(canvas);
         for (index, choice) in ZOOM_CHOICES.iter().copied().enumerate() {
@@ -864,7 +876,17 @@ impl Renderer {
         let Some((width, height)) = self.image_size(canvas) else {
             return PointerAction::None;
         };
-        if width <= canvas.width && height <= canvas.height {
+        if !image_exceeds_canvas(canvas, width, height) {
+            return PointerAction::None;
+        }
+        let (pan_x, pan_y) = self.constrained_pan_for(canvas, width, height);
+        let destination = RectF::new(
+            canvas.x + (canvas.width - width) * 0.5 + pan_x,
+            canvas.y + (canvas.height - height) * 0.5 + pan_y,
+            width,
+            height,
+        );
+        if !destination.contains(x, y) {
             return PointerAction::None;
         }
         self.pan_last_position = Some((x, y));
@@ -976,6 +998,16 @@ fn inset(rect: RectF, amount: f32) -> RectF {
         rect.y + amount,
         (rect.width - amount * 2.0).max(0.0),
         (rect.height - amount * 2.0).max(0.0),
+    )
+}
+
+fn centered_square(rect: RectF, size: f32) -> RectF {
+    let extent = size.min(rect.width).min(rect.height).max(0.0);
+    RectF::new(
+        rect.x + (rect.width - extent) * 0.5,
+        rect.y + (rect.height - extent) * 0.5,
+        extent,
+        extent,
     )
 }
 
@@ -1096,6 +1128,10 @@ fn constrain_pan_axis(pan: f32, image_extent: f32, canvas_extent: f32) -> f32 {
     }
     let limit = (image_extent - canvas_extent) * 0.5 + PAN_EDGE_PADDING_DIP;
     pan.clamp(-limit, limit)
+}
+
+fn image_exceeds_canvas(canvas: RectF, width: f32, height: f32) -> bool {
+    width > canvas.width || height > canvas.height
 }
 
 fn create_d3d_device() -> Result<ID3D11Device> {
@@ -1225,6 +1261,14 @@ mod tests {
     #[test]
     fn images_that_fit_do_not_pan_on_that_axis() {
         assert_eq!(constrain_pan_axis(50.0, 600.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn image_is_pannable_when_either_axis_exceeds_the_canvas() {
+        let canvas = RectF::new(0.0, 0.0, 800.0, 600.0);
+        assert!(image_exceeds_canvas(canvas, 801.0, 500.0));
+        assert!(image_exceeds_canvas(canvas, 700.0, 601.0));
+        assert!(!image_exceeds_canvas(canvas, 800.0, 600.0));
     }
 
     #[test]

@@ -6,10 +6,10 @@ use crate::image::{DecodedImage, create_demo_image, decode_preview};
 use crate::platform::chrome::{apply_dwm_attributes, non_client_hit_test};
 use crate::render::{PointerAction, Renderer};
 use purepic::ui::chrome::CaptionButton;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MonitorFromWindow, PAINTSTRUCT, UpdateWindow,
+    MonitorFromWindow, PAINTSTRUCT, ScreenToClient, UpdateWindow,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -21,20 +21,23 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-    DispatchMessageW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW,
-    GetWindowPlacement, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, IDC_ARROW, IsZoomed, LoadCursorW,
-    LoadIconW, MSG, PostMessageW, PostQuitMessage, RegisterClassExW, SC_CLOSE, SC_MAXIMIZE,
-    SC_MINIMIZE, SC_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_APP, WM_DESTROY, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCALCSIZE,
-    WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SIZE,
+    DispatchMessageW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW,
+    GetWindowLongPtrW, GetWindowPlacement, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, IDC_ARROW,
+    IDC_HAND, IsZoomed, LoadCursorW, LoadIconW, MINMAXINFO, MSG, PostMessageW, PostQuitMessage,
+    RegisterClassExW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SW_SHOW, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetWindowLongPtrW,
+    SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
+    WINDOWPLACEMENT, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCDESTROY,
+    WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_SIZE,
     WM_SYSCOMMAND, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
 const INITIAL_WIDTH: i32 = 1920;
 const INITIAL_HEIGHT: i32 = 1080;
+const MINIMUM_WIDTH: i32 = 850;
+const MINIMUM_HEIGHT: i32 = 850;
 const DEFAULT_DEMO_FILE: &str = "PixPin_2026-01-10_23-22-10.jpg";
 const WM_APP_IMAGE_READY: u32 = WM_APP + 1;
 
@@ -187,6 +190,25 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_GETMINMAXINFO => {
+            let bounds = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
+            enforce_minimum_window_size(bounds);
+            LRESULT(0)
+        }
+        WM_SETCURSOR if (lparam.0 as u32 & 0xFFFF) == HTCLIENT => {
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                let mut point = POINT::default();
+                if unsafe { GetCursorPos(&mut point) }.is_ok()
+                    && unsafe { ScreenToClient(hwnd, &mut point) }.as_bool()
+                    && (state.image_dragging || state.renderer.shows_pan_cursor(point.x, point.y))
+                    && let Ok(cursor) = unsafe { LoadCursorW(None, IDC_HAND) }
+                {
+                    unsafe { SetCursor(Some(cursor)) };
+                    return LRESULT(1);
+                }
+            }
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
         WM_LBUTTONDOWN => {
             let mut fullscreen_request = None;
             if let Some(state) = unsafe { state_mut(hwnd) } {
@@ -525,4 +547,22 @@ fn default_demo_path() -> Option<PathBuf> {
         );
     }
     candidates.into_iter().find(|path| path.is_file())
+}
+
+fn enforce_minimum_window_size(bounds: &mut MINMAXINFO) {
+    bounds.ptMinTrackSize.x = MINIMUM_WIDTH;
+    bounds.ptMinTrackSize.y = MINIMUM_HEIGHT;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimum_window_tracking_size_is_850_square() {
+        let mut bounds = MINMAXINFO::default();
+        enforce_minimum_window_size(&mut bounds);
+        assert_eq!(bounds.ptMinTrackSize.x, 850);
+        assert_eq!(bounds.ptMinTrackSize.y, 850);
+    }
 }
