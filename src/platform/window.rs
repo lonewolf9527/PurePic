@@ -36,8 +36,8 @@ use windows::core::{Error, PCWSTR, Result, w};
 
 const INITIAL_WIDTH: i32 = 1920;
 const INITIAL_HEIGHT: i32 = 1080;
-const MINIMUM_WIDTH: i32 = 850;
-const MINIMUM_HEIGHT: i32 = 850;
+const MINIMUM_WIDTH: i32 = 890;
+const MINIMUM_HEIGHT: i32 = 890;
 const DEFAULT_DEMO_FILE: &str = "PixPin_2026-01-10_23-22-10.jpg";
 const WM_APP_IMAGE_READY: u32 = WM_APP + 1;
 
@@ -559,10 +559,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn minimum_window_tracking_size_is_850_square() {
+    fn minimum_window_tracking_size_is_890_square() {
         let mut bounds = MINMAXINFO::default();
         enforce_minimum_window_size(&mut bounds);
-        assert_eq!(bounds.ptMinTrackSize.x, 850);
-        assert_eq!(bounds.ptMinTrackSize.y, 850);
+        assert_eq!(bounds.ptMinTrackSize.x, 890);
+        assert_eq!(bounds.ptMinTrackSize.y, 890);
     }
 }

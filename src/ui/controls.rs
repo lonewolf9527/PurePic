@@ -13,7 +13,7 @@ pub enum StatusControl {
 impl StatusControl {
     pub const fn tooltip(self) -> Option<(&'static str, f32)> {
         match self {
-            Self::ActualSize => Some(("缩放到实际大小 (Ctrl+1)", 196.0)),
+            Self::ActualSize => Some(("实际大小", 76.0)),
             Self::ZoomMenu => Some(("选择缩放比例", 104.0)),
             Self::ZoomOut => Some(("缩小", 52.0)),
             Self::Slider => None,
@@ -36,17 +36,19 @@ pub struct StatusControlsLayout {
 impl StatusControlsLayout {
     pub fn compute(status_bar: RectF) -> Self {
         const BUTTON: f32 = 36.0;
+        const MENU_HEIGHT: f32 = 32.0;
         const MENU: f32 = 78.0;
         const SLIDER: f32 = 120.0;
         const GAP: f32 = 4.0;
         const RIGHT_PADDING: f32 = 12.0;
         let total = BUTTON * 4.0 + MENU + SLIDER + GAP * 5.0;
         let y = status_bar.y + (status_bar.height - BUTTON).max(0.0) * 0.5;
+        let menu_y = status_bar.y + (status_bar.height - MENU_HEIGHT).max(0.0) * 0.5;
         let mut x = (status_bar.right() - RIGHT_PADDING - total).max(status_bar.x);
 
         let actual_size = RectF::new(x, y, BUTTON, BUTTON);
         x += BUTTON + GAP;
-        let zoom_menu = RectF::new(x, y, MENU, BUTTON);
+        let zoom_menu = RectF::new(x, menu_y, MENU, MENU_HEIGHT);
         x += MENU + GAP;
         let zoom_out = RectF::new(x, y, BUTTON, BUTTON);
         x += BUTTON + GAP;
@@ -110,8 +112,18 @@ mod tests {
     fn buttons_expose_tooltips_but_slider_does_not() {
         assert_eq!(
             StatusControl::ActualSize.tooltip(),
-            Some(("缩放到实际大小 (Ctrl+1)", 196.0))
+            Some(("实际大小", 76.0))
         );
         assert_eq!(StatusControl::Slider.tooltip(), None);
+    }
+
+    #[test]
+    fn zoom_menu_is_shorter_and_remains_vertically_centered() {
+        let bar = RectF::new(0.0, 700.0, 1280.0, 44.0);
+        let layout = StatusControlsLayout::compute(bar);
+        assert_eq!(layout.zoom_menu.height, 32.0);
+        assert_eq!(layout.zoom_menu.y, 706.0);
+        assert_eq!(layout.actual_size.height, 36.0);
+        assert_eq!(layout.actual_size.y, 704.0);
     }
 }

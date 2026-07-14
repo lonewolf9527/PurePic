@@ -44,6 +44,9 @@ use windows_numerics::Vector2;
 const BACKGROUND: D2D1_COLOR_F = color(0x20, 0x20, 0x20);
 const STATUS_BACKGROUND: D2D1_COLOR_F = color(0x27, 0x27, 0x27);
 const STATUS_CONTROL_BACKGROUND: D2D1_COLOR_F = color(0x34, 0x34, 0x34);
+const MENU_BACKGROUND: D2D1_COLOR_F = color(0x2E, 0x2E, 0x2E);
+const MENU_HOVER_BACKGROUND: D2D1_COLOR_F = color(0x3A, 0x3A, 0x3A);
+const MENU_SELECTED_BACKGROUND: D2D1_COLOR_F = color(0x17, 0x6F, 0x71);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
 const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
 const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
@@ -72,6 +75,9 @@ pub struct Renderer {
     title_brush: ID2D1SolidColorBrush,
     status_brush: ID2D1SolidColorBrush,
     status_control_brush: ID2D1SolidColorBrush,
+    menu_brush: ID2D1SolidColorBrush,
+    menu_hover_brush: ID2D1SolidColorBrush,
+    menu_selected_brush: ID2D1SolidColorBrush,
     primary_text_brush: ID2D1SolidColorBrush,
     secondary_text_brush: ID2D1SolidColorBrush,
     muted_text_brush: ID2D1SolidColorBrush,
@@ -177,6 +183,11 @@ impl Renderer {
         let status_brush = unsafe { context.CreateSolidColorBrush(&STATUS_BACKGROUND, None)? };
         let status_control_brush =
             unsafe { context.CreateSolidColorBrush(&STATUS_CONTROL_BACKGROUND, None)? };
+        let menu_brush = unsafe { context.CreateSolidColorBrush(&MENU_BACKGROUND, None)? };
+        let menu_hover_brush =
+            unsafe { context.CreateSolidColorBrush(&MENU_HOVER_BACKGROUND, None)? };
+        let menu_selected_brush =
+            unsafe { context.CreateSolidColorBrush(&MENU_SELECTED_BACKGROUND, None)? };
         let primary_text_brush = unsafe { context.CreateSolidColorBrush(&PRIMARY_TEXT, None)? };
         let secondary_text_brush = unsafe { context.CreateSolidColorBrush(&SECONDARY_TEXT, None)? };
         let muted_text_brush = unsafe { context.CreateSolidColorBrush(&MUTED_TEXT, None)? };
@@ -195,6 +206,9 @@ impl Renderer {
             title_brush,
             status_brush,
             status_control_brush,
+            menu_brush,
+            menu_hover_brush,
+            menu_selected_brush,
             primary_text_brush,
             secondary_text_brush,
             muted_text_brush,
@@ -467,6 +481,9 @@ impl Renderer {
     pub fn shows_pan_cursor(&self, x_px: i32, y_px: i32) -> bool {
         let (x, y) = self.point_to_dip(x_px, y_px);
         let canvas = self.current_layout().canvas;
+        if !canvas.contains(x, y) {
+            return false;
+        }
         let Some((width, height)) = self.image_size(canvas) else {
             return false;
         };
@@ -694,9 +711,9 @@ impl Renderer {
             );
             let chevron_rect = RectF::new(
                 controls.zoom_menu.right() - 20.0,
-                controls.zoom_menu.y + 10.0,
+                controls.zoom_menu.y + (controls.zoom_menu.height - 12.0) * 0.5,
                 12.0,
-                16.0,
+                12.0,
             );
             draw_icon(
                 &self.context,
@@ -769,7 +786,7 @@ impl Renderer {
         let menu = self.zoom_menu_rect(button);
         unsafe {
             self.context
-                .FillRoundedRectangle(&to_d2d_rounded_rect(menu, 8.0), &self.status_control_brush)
+                .FillRoundedRectangle(&to_d2d_rounded_rect(menu, 8.0), &self.menu_brush)
         };
         let current = self.current_zoom(canvas);
         for (index, choice) in ZOOM_CHOICES.iter().copied().enumerate() {
@@ -779,13 +796,18 @@ impl Renderer {
                 ZoomChoice::Fit => self.fit_mode,
                 ZoomChoice::Percent(value) => !self.fit_mode && (current - value).abs() < 0.001,
             };
-            if selected || hovered {
+            let state_brush = if selected {
+                Some(&self.menu_selected_brush)
+            } else if hovered {
+                Some(&self.menu_hover_brush)
+            } else {
+                None
+            };
+            if let Some(brush) = state_brush {
                 let selected_row = RectF::new(row.x + 4.0, row.y + 2.0, row.width - 8.0, 26.0);
                 unsafe {
-                    self.context.FillRoundedRectangle(
-                        &to_d2d_rounded_rect(selected_row, 5.0),
-                        &self.caption_hover_brush,
-                    )
+                    self.context
+                        .FillRoundedRectangle(&to_d2d_rounded_rect(selected_row, 5.0), brush)
                 };
             }
             unsafe {
@@ -873,6 +895,9 @@ impl Renderer {
     }
 
     fn begin_pan(&mut self, x: f32, y: f32, canvas: RectF) -> PointerAction {
+        if !canvas.contains(x, y) {
+            return PointerAction::None;
+        }
         let Some((width, height)) = self.image_size(canvas) else {
             return PointerAction::None;
         };
