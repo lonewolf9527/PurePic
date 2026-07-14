@@ -252,6 +252,7 @@ unsafe extern "system" fn window_proc(
                 let mut point = POINT::default();
                 if unsafe { GetCursorPos(&mut point) }.is_ok()
                     && unsafe { ScreenToClient(hwnd, &mut point) }.as_bool()
+                    && !state.renderer.is_over_thumbnail_panel(point.x, point.y)
                     && (state.image_dragging || state.renderer.shows_pan_cursor(point.x, point.y))
                     && let Ok(cursor) = unsafe { LoadCursorW(None, IDC_HAND) }
                 {

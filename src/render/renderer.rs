@@ -15,7 +15,7 @@ use purepic::ui::thumbnail::{
     visible_prefetch_range,
 };
 use purepic::ui::zoom::{
-    MAX_ZOOM, MIN_ZOOM, SizeF, fit_zoom, slider_to_zoom, step_zoom, zoom_to_slider,
+    MAX_ZOOM, MIN_ZOOM, SizeF, fit_zoom, initial_zoom, slider_to_zoom, step_zoom, zoom_to_slider,
 };
 use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::{E_FAIL, HMODULE, HWND};
@@ -60,6 +60,7 @@ const MENU_HOVER_BACKGROUND: D2D1_COLOR_F = color(0x3A, 0x3A, 0x3A);
 const MENU_SELECTED_BACKGROUND: D2D1_COLOR_F = color(0x17, 0x6F, 0x71);
 const THUMBNAIL_BACKGROUND: D2D1_COLOR_F = color_alpha(0x27, 0x27, 0x27, 0.82);
 const THUMBNAIL_PLACEHOLDER: D2D1_COLOR_F = color(0x20, 0x20, 0x20);
+const THUMBNAIL_HOVER: D2D1_COLOR_F = color(0x4A, 0x5A, 0x61);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
 const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
 const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
@@ -97,6 +98,7 @@ pub struct Renderer {
     menu_selected_brush: ID2D1SolidColorBrush,
     thumbnail_brush: ID2D1SolidColorBrush,
     thumbnail_placeholder_brush: ID2D1SolidColorBrush,
+    thumbnail_hover_brush: ID2D1SolidColorBrush,
     primary_text_brush: ID2D1SolidColorBrush,
     secondary_text_brush: ID2D1SolidColorBrush,
     muted_text_brush: ID2D1SolidColorBrush,
@@ -269,6 +271,8 @@ impl Renderer {
             unsafe { context.CreateSolidColorBrush(&THUMBNAIL_BACKGROUND, None)? };
         let thumbnail_placeholder_brush =
             unsafe { context.CreateSolidColorBrush(&THUMBNAIL_PLACEHOLDER, None)? };
+        let thumbnail_hover_brush =
+            unsafe { context.CreateSolidColorBrush(&THUMBNAIL_HOVER, None)? };
         let primary_text_brush = unsafe { context.CreateSolidColorBrush(&PRIMARY_TEXT, None)? };
         let secondary_text_brush = unsafe { context.CreateSolidColorBrush(&SECONDARY_TEXT, None)? };
         let muted_text_brush = unsafe { context.CreateSolidColorBrush(&MUTED_TEXT, None)? };
@@ -292,6 +296,7 @@ impl Renderer {
             menu_selected_brush,
             thumbnail_brush,
             thumbnail_placeholder_brush,
+            thumbnail_hover_brush,
             primary_text_brush,
             secondary_text_brush,
             muted_text_brush,
@@ -729,7 +734,14 @@ impl Renderer {
 
     pub fn shows_pan_cursor(&self, x_px: i32, y_px: i32) -> bool {
         let (x, y) = self.point_to_dip(x_px, y_px);
-        let canvas = self.current_layout().canvas;
+        let layout = self.current_layout();
+        if layout
+            .thumbnail_panel
+            .is_some_and(|panel| panel.contains(x, y))
+        {
+            return false;
+        }
+        let canvas = layout.canvas;
         if !canvas.contains(x, y) {
             return false;
         }
@@ -741,6 +753,13 @@ impl Renderer {
         }
         self.image_destination(canvas)
             .is_some_and(|destination| destination.contains(x, y))
+    }
+
+    pub fn is_over_thumbnail_panel(&self, x_px: i32, y_px: i32) -> bool {
+        let (x, y) = self.point_to_dip(x_px, y_px);
+        self.current_layout()
+            .thumbnail_panel
+            .is_some_and(|panel| panel.contains(x, y))
     }
 
     pub fn set_thumbnail_catalog(&mut self, paths: Vec<PathBuf>, current_path: &Path) {
@@ -981,12 +1000,22 @@ impl Renderer {
             image.original_width, image.original_height, size_label
         );
         self.message.clear();
+        let canvas = self.current_layout().canvas;
+        let dpi_scale = self.dpi as f64 / 96.0;
+        let zoom = initial_zoom(
+            SizeF::new(image.original_width as f64, image.original_height as f64),
+            SizeF::new(
+                canvas.width as f64 * dpi_scale,
+                canvas.height as f64 * dpi_scale,
+            ),
+        ) as f32;
         self.image = Some(RenderedImage {
             bitmap,
             width: image.original_width,
             height: image.original_height,
         });
-        self.fit_mode = true;
+        self.zoom = zoom;
+        self.fit_mode = zoom < 1.0;
         self.pan_x = 0.0;
         self.pan_y = 0.0;
         self.pan_last_position = None;
@@ -1206,7 +1235,7 @@ impl Renderer {
                 if hovered && !selected {
                     self.context.FillRoundedRectangle(
                         &to_d2d_rounded_rect(frame, 5.0),
-                        &self.status_control_brush,
+                        &self.thumbnail_hover_brush,
                     );
                 }
                 self.context.FillRoundedRectangle(
@@ -1431,10 +1460,10 @@ impl Renderer {
                 },
             );
             let dock_icon_rect = RectF::new(
-                controls.dock_menu.x + 5.0,
-                controls.dock_menu.y + 6.0,
-                20.0,
-                20.0,
+                controls.dock_menu.x + 4.0,
+                controls.dock_menu.y + 7.0,
+                18.0,
+                18.0,
             );
             draw_icon(
                 &self.context,
@@ -1444,9 +1473,9 @@ impl Renderer {
                 &self.primary_text_brush,
             );
             let chevron = RectF::new(
-                controls.dock_menu.right() - 11.0,
-                controls.dock_menu.y + 10.0,
-                6.0,
+                controls.dock_menu.right() - 20.0,
+                controls.dock_menu.y + (controls.dock_menu.height - 12.0) * 0.5,
+                12.0,
                 12.0,
             );
             draw_icon(

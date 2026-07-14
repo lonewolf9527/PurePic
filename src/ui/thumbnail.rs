@@ -222,16 +222,16 @@ mod tests {
 
     #[test]
     fn short_thumbnail_overlays_shrink_and_center_on_their_main_axis() {
-        let available = RectF::new(12.0, 56.0, 1_256.0, 92.0);
+        let available = RectF::new(0.0, 44.0, 1_280.0, 92.0);
         assert_eq!(
             fit_thumbnail_overlay(available, ThumbnailDock::Bottom, 3),
-            RectF::new(506.0, 56.0, 268.0, 92.0)
+            RectF::new(506.0, 44.0, 268.0, 92.0)
         );
 
-        let available = RectF::new(12.0, 56.0, 92.0, 688.0);
+        let available = RectF::new(0.0, 44.0, 92.0, 712.0);
         assert_eq!(
             fit_thumbnail_overlay(available, ThumbnailDock::Left, 2),
-            RectF::new(12.0, 308.0, 92.0, 184.0)
+            RectF::new(0.0, 308.0, 92.0, 184.0)
         );
     }
 }

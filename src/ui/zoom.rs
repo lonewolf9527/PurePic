@@ -1,5 +1,6 @@
 pub const MIN_ZOOM: f64 = 0.01;
 pub const MAX_ZOOM: f64 = 8.0;
+pub const MIN_INITIAL_IMAGE_EXTENT_PX: f64 = 256.0;
 
 pub const ZOOM_STEPS: &[f64] = &[
     0.01, 0.02, 0.05, 0.10, 0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 3.00, 4.00, 5.00, 6.00, 7.00,
@@ -39,6 +40,22 @@ pub fn fit_zoom(image: SizeF, viewport: SizeF) -> f64 {
     (viewport.width / image.width)
         .min(viewport.height / image.height)
         .clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
+pub fn initial_zoom(image: SizeF, viewport: SizeF) -> f64 {
+    let fit = fit_zoom(image, viewport);
+    if fit < 1.0 {
+        return fit;
+    }
+
+    let largest_extent = image.width.max(image.height);
+    if largest_extent > 0.0 && largest_extent < MIN_INITIAL_IMAGE_EXTENT_PX {
+        (MIN_INITIAL_IMAGE_EXTENT_PX / largest_extent)
+            .min(fit)
+            .clamp(MIN_ZOOM, MAX_ZOOM)
+    } else {
+        1.0
+    }
 }
 
 pub fn slider_to_zoom(position: f64) -> f64 {
@@ -104,6 +121,26 @@ mod tests {
     fn fit_zoom_preserves_the_entire_image() {
         let zoom = fit_zoom(SizeF::new(3840.0, 2160.0), SizeF::new(1280.0, 700.0));
         assert!((zoom - 700.0 / 2160.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn initial_zoom_prefers_actual_size_with_fit_and_minimum_bounds() {
+        assert_eq!(
+            initial_zoom(SizeF::new(800.0, 600.0), SizeF::new(1280.0, 700.0)),
+            1.0
+        );
+        assert_eq!(
+            initial_zoom(SizeF::new(1600.0, 900.0), SizeF::new(1280.0, 700.0)),
+            700.0 / 900.0
+        );
+        assert_eq!(
+            initial_zoom(SizeF::new(128.0, 64.0), SizeF::new(1280.0, 700.0)),
+            2.0
+        );
+        assert_eq!(
+            initial_zoom(SizeF::new(64.0, 32.0), SizeF::new(160.0, 80.0)),
+            2.5
+        );
     }
 
     #[test]
