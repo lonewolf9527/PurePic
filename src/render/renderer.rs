@@ -18,6 +18,7 @@ use purepic::ui::zoom::{
     MAX_ZOOM, MIN_ZOOM, SizeF, fit_zoom, initial_zoom, slider_to_zoom, step_zoom, zoom_to_slider,
 };
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{E_FAIL, HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
@@ -58,9 +59,11 @@ const STATUS_CONTROL_BACKGROUND: D2D1_COLOR_F = color(0x34, 0x34, 0x34);
 const MENU_BACKGROUND: D2D1_COLOR_F = color(0x2E, 0x2E, 0x2E);
 const MENU_HOVER_BACKGROUND: D2D1_COLOR_F = color(0x3A, 0x3A, 0x3A);
 const MENU_SELECTED_BACKGROUND: D2D1_COLOR_F = color(0x17, 0x6F, 0x71);
-const THUMBNAIL_BACKGROUND: D2D1_COLOR_F = color_alpha(0x27, 0x27, 0x27, 0.82);
-const THUMBNAIL_PLACEHOLDER: D2D1_COLOR_F = color(0x20, 0x20, 0x20);
+const THUMBNAIL_BACKGROUND: D2D1_COLOR_F = color_alpha(0x27, 0x27, 0x27, 0.40);
+const THUMBNAIL_PLACEHOLDER: D2D1_COLOR_F = color_alpha(0x17, 0x19, 0x1A, 0.72);
 const THUMBNAIL_HOVER: D2D1_COLOR_F = color(0x4A, 0x5A, 0x61);
+const NAVIGATION_BACKGROUND: D2D1_COLOR_F = color_alpha(0x22, 0x25, 0x27, 0.88);
+const NAVIGATION_HOVER: D2D1_COLOR_F = color_alpha(0x38, 0x3E, 0x41, 0.94);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
 const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
 const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
@@ -69,6 +72,14 @@ const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
 const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
 const APP_TITLE: &str = "PurePic 图片查看器";
 const TITLE_TEXT_LEFT_DIP: f32 = 176.0;
+const NAVIGATION_BUTTON_WIDTH_DIP: f32 = 36.0;
+const NAVIGATION_BUTTON_HEIGHT_DIP: f32 = 64.0;
+const NAVIGATION_EDGE_INSET_DIP: f32 = 16.0;
+const NAVIGATION_PROXIMITY_X_DIP: f32 = 28.0;
+const NAVIGATION_PROXIMITY_Y_DIP: f32 = 56.0;
+const NAVIGATION_SHOW_DELAY: Duration = Duration::from_millis(240);
+const NAVIGATION_FADE_IN_SECONDS: f32 = 0.14;
+const NAVIGATION_FADE_OUT_SECONDS: f32 = 0.32;
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     color_alpha(r, g, b, 1.0)
@@ -99,6 +110,9 @@ pub struct Renderer {
     thumbnail_brush: ID2D1SolidColorBrush,
     thumbnail_placeholder_brush: ID2D1SolidColorBrush,
     thumbnail_hover_brush: ID2D1SolidColorBrush,
+    navigation_brush: ID2D1SolidColorBrush,
+    navigation_hover_brush: ID2D1SolidColorBrush,
+    navigation_icon_brush: ID2D1SolidColorBrush,
     primary_text_brush: ID2D1SolidColorBrush,
     secondary_text_brush: ID2D1SolidColorBrush,
     muted_text_brush: ID2D1SolidColorBrush,
@@ -140,6 +154,12 @@ pub struct Renderer {
     thumbnail_cache_bytes: usize,
     thumbnail_cache_stamp: u64,
     thumbnail_scroll_drag: Option<ThumbnailScrollDrag>,
+    navigation_target: Option<ImageNavigation>,
+    navigation_displayed: Option<ImageNavigation>,
+    navigation_hot: Option<ImageNavigation>,
+    navigation_opacity: f32,
+    navigation_target_since: Instant,
+    navigation_last_tick: Instant,
     pan_x: f32,
     pan_y: f32,
     pan_last_position: Option<(f32, f32)>,
@@ -174,6 +194,12 @@ struct ThumbnailScrollbar {
     track: RectF,
     thumb: RectF,
     maximum: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ImageNavigation {
+    Previous,
+    Next,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -273,6 +299,11 @@ impl Renderer {
             unsafe { context.CreateSolidColorBrush(&THUMBNAIL_PLACEHOLDER, None)? };
         let thumbnail_hover_brush =
             unsafe { context.CreateSolidColorBrush(&THUMBNAIL_HOVER, None)? };
+        let navigation_brush =
+            unsafe { context.CreateSolidColorBrush(&NAVIGATION_BACKGROUND, None)? };
+        let navigation_hover_brush =
+            unsafe { context.CreateSolidColorBrush(&NAVIGATION_HOVER, None)? };
+        let navigation_icon_brush = unsafe { context.CreateSolidColorBrush(&PRIMARY_TEXT, None)? };
         let primary_text_brush = unsafe { context.CreateSolidColorBrush(&PRIMARY_TEXT, None)? };
         let secondary_text_brush = unsafe { context.CreateSolidColorBrush(&SECONDARY_TEXT, None)? };
         let muted_text_brush = unsafe { context.CreateSolidColorBrush(&MUTED_TEXT, None)? };
@@ -281,6 +312,7 @@ impl Renderer {
             unsafe { context.CreateSolidColorBrush(&CAPTION_CLOSE_HOVER, None)? };
         let accent_brush = unsafe { context.CreateSolidColorBrush(&ACCENT, None)? };
 
+        let now = Instant::now();
         let mut renderer = Self {
             _d3d_device: d3d_device,
             d2d_factory,
@@ -297,6 +329,9 @@ impl Renderer {
             thumbnail_brush,
             thumbnail_placeholder_brush,
             thumbnail_hover_brush,
+            navigation_brush,
+            navigation_hover_brush,
+            navigation_icon_brush,
             primary_text_brush,
             secondary_text_brush,
             muted_text_brush,
@@ -338,6 +373,12 @@ impl Renderer {
             thumbnail_cache_bytes: 0,
             thumbnail_cache_stamp: 0,
             thumbnail_scroll_drag: None,
+            navigation_target: None,
+            navigation_displayed: None,
+            navigation_hot: None,
+            navigation_opacity: 0.0,
+            navigation_target_since: now,
+            navigation_last_tick: now,
             pan_x: 0.0,
             pan_y: 0.0,
             pan_last_position: None,
@@ -398,6 +439,7 @@ impl Renderer {
             {
                 self.draw_thumbnails(panel);
             }
+            self.draw_image_navigation(layout);
             if !self.fullscreen {
                 // The chrome is an overlay: large, zoomed images may extend beyond the
                 // canvas, but must never obscure the title or status bars.
@@ -519,6 +561,21 @@ impl Renderer {
     pub fn set_pointer_hot(&mut self, x_px: i32, y_px: i32) -> bool {
         let (x, y) = self.point_to_dip(x_px, y_px);
         let layout = self.current_layout();
+        let now = Instant::now();
+        let animation_changed = self.advance_navigation_animation(now);
+        let navigation_target = self.navigation_at_proximity(layout, x, y);
+        let navigation_target_changed = self.navigation_target != navigation_target;
+        if navigation_target_changed {
+            self.navigation_target = navigation_target;
+            self.navigation_target_since = now;
+            if navigation_target.is_some() {
+                self.navigation_displayed = navigation_target;
+            }
+        }
+        let navigation_hot = navigation_target.filter(|direction| {
+            self.navigation_button_rect(layout, *direction)
+                .contains(x, y)
+        });
         let status_hot = if self.fullscreen {
             None
         } else {
@@ -561,6 +618,9 @@ impl Renderer {
             && self.thumbnail_hot == thumbnail_hot
             && self.thumbnail_control_hot == thumbnail_control_hot
             && self.dock_menu_hot == dock_menu_hot
+            && self.navigation_hot == navigation_hot
+            && !navigation_target_changed
+            && !animation_changed
         {
             return false;
         }
@@ -570,28 +630,64 @@ impl Renderer {
         self.thumbnail_hot = thumbnail_hot;
         self.thumbnail_control_hot = thumbnail_control_hot;
         self.dock_menu_hot = dock_menu_hot;
+        self.navigation_hot = navigation_hot;
         true
     }
 
     pub fn clear_pointer_hot(&mut self) -> bool {
+        let now = Instant::now();
+        let animation_changed = self.advance_navigation_animation(now);
         let changed = self.status_hot.is_some()
             || self.zoom_menu_hot.is_some()
             || self.title_action_hot
             || self.thumbnail_hot.is_some()
             || self.thumbnail_control_hot.is_some()
-            || self.dock_menu_hot.is_some();
+            || self.dock_menu_hot.is_some()
+            || self.navigation_target.is_some()
+            || self.navigation_hot.is_some()
+            || animation_changed;
         self.status_hot = None;
         self.zoom_menu_hot = None;
         self.title_action_hot = false;
         self.thumbnail_hot = None;
         self.thumbnail_control_hot = None;
         self.dock_menu_hot = None;
+        self.navigation_target = None;
+        self.navigation_hot = None;
+        self.navigation_target_since = now;
         changed
+    }
+
+    pub fn tick_navigation_animation(&mut self) -> bool {
+        self.advance_navigation_animation(Instant::now())
+    }
+
+    pub fn navigation_animation_active(&self) -> bool {
+        let target_available = self
+            .navigation_target
+            .is_some_and(|direction| self.navigation_available(direction));
+        if target_available {
+            Instant::now().saturating_duration_since(self.navigation_target_since)
+                < NAVIGATION_SHOW_DELAY
+                || self.navigation_opacity < 1.0
+        } else {
+            self.navigation_opacity > 0.0
+        }
     }
 
     pub fn pointer_down(&mut self, x_px: i32, y_px: i32) -> PointerAction {
         let (x, y) = self.point_to_dip(x_px, y_px);
         let layout = self.current_layout();
+        if self.navigation_opacity >= 0.2
+            && let Some(direction) = self.navigation_displayed
+            && self.navigation_available(direction)
+            && self
+                .navigation_button_rect(layout, direction)
+                .contains(x, y)
+            && let Some(index) = self.navigation_index(direction)
+        {
+            return PointerAction::OpenThumbnail(index);
+        }
         if self.fullscreen {
             return self.begin_pan(x, y, layout.canvas);
         }
@@ -781,6 +877,10 @@ impl Renderer {
         self.thumbnail_hot = None;
         self.thumbnail_cache_bytes = 0;
         self.thumbnail_cache_stamp = 0;
+        self.navigation_target = None;
+        self.navigation_displayed = None;
+        self.navigation_hot = None;
+        self.navigation_opacity = 0.0;
         self.center_selected_thumbnail();
     }
 
@@ -1312,6 +1412,41 @@ impl Renderer {
         unsafe { self.context.PopAxisAlignedClip() };
     }
 
+    unsafe fn draw_image_navigation(&self, layout: WindowLayout) {
+        if self.navigation_opacity <= 0.0 {
+            return;
+        }
+        let Some(direction) = self.navigation_displayed else {
+            return;
+        };
+        if !self.navigation_available(direction) {
+            return;
+        }
+        let button = self.navigation_button_rect(layout, direction);
+        let background = if self.navigation_hot == Some(direction) {
+            &self.navigation_hover_brush
+        } else {
+            &self.navigation_brush
+        };
+        unsafe {
+            background.SetOpacity(self.navigation_opacity);
+            self.navigation_icon_brush
+                .SetOpacity(self.navigation_opacity);
+            self.context
+                .FillRoundedRectangle(&to_d2d_rounded_rect(button, 7.0), background);
+            draw_icon(
+                &self.context,
+                &self.d2d_factory,
+                match direction {
+                    ImageNavigation::Previous => &self.icons.image_previous,
+                    ImageNavigation::Next => &self.icons.image_next,
+                },
+                centered_square(button, 22.0),
+                &self.navigation_icon_brush,
+            );
+        }
+    }
+
     unsafe fn draw_thumbnail_scrollbar(&self, panel: RectF) {
         let Some(scrollbar) = self.thumbnail_scrollbar(panel) else {
             return;
@@ -1682,6 +1817,99 @@ impl Renderer {
             ));
         }
         layout
+    }
+
+    fn navigation_button_rect(&self, layout: WindowLayout, direction: ImageNavigation) -> RectF {
+        let mut x = match direction {
+            ImageNavigation::Previous => layout.canvas.x + NAVIGATION_EDGE_INSET_DIP,
+            ImageNavigation::Next => {
+                layout.canvas.right() - NAVIGATION_EDGE_INSET_DIP - NAVIGATION_BUTTON_WIDTH_DIP
+            }
+        };
+        if let Some(panel) = layout.thumbnail_panel {
+            match (direction, self.thumbnail_dock) {
+                (ImageNavigation::Previous, ThumbnailDock::Left) => {
+                    x = panel.right() + NAVIGATION_EDGE_INSET_DIP;
+                }
+                (ImageNavigation::Next, ThumbnailDock::Right) => {
+                    x = panel.x - NAVIGATION_EDGE_INSET_DIP - NAVIGATION_BUTTON_WIDTH_DIP;
+                }
+                _ => {}
+            }
+        }
+        RectF::new(
+            x,
+            layout.canvas.y + (layout.canvas.height - NAVIGATION_BUTTON_HEIGHT_DIP) * 0.5,
+            NAVIGATION_BUTTON_WIDTH_DIP,
+            NAVIGATION_BUTTON_HEIGHT_DIP,
+        )
+    }
+
+    fn navigation_at_proximity(
+        &self,
+        layout: WindowLayout,
+        x: f32,
+        y: f32,
+    ) -> Option<ImageNavigation> {
+        if layout
+            .thumbnail_panel
+            .is_some_and(|panel| panel.contains(x, y))
+        {
+            return None;
+        }
+        [ImageNavigation::Previous, ImageNavigation::Next]
+            .into_iter()
+            .find(|direction| {
+                if !self.navigation_available(*direction) {
+                    return false;
+                }
+                let button = self.navigation_button_rect(layout, *direction);
+                RectF::new(
+                    button.x - NAVIGATION_PROXIMITY_X_DIP,
+                    button.y - NAVIGATION_PROXIMITY_Y_DIP,
+                    button.width + NAVIGATION_PROXIMITY_X_DIP * 2.0,
+                    button.height + NAVIGATION_PROXIMITY_Y_DIP * 2.0,
+                )
+                .contains(x, y)
+            })
+    }
+
+    fn navigation_available(&self, direction: ImageNavigation) -> bool {
+        let Some(selected) = self.thumbnail_selected else {
+            return false;
+        };
+        match direction {
+            ImageNavigation::Previous => selected > 0,
+            ImageNavigation::Next => selected + 1 < self.thumbnail_items.len(),
+        }
+    }
+
+    fn navigation_index(&self, direction: ImageNavigation) -> Option<usize> {
+        let selected = self.thumbnail_selected?;
+        match direction {
+            ImageNavigation::Previous => selected.checked_sub(1),
+            ImageNavigation::Next => {
+                (selected + 1 < self.thumbnail_items.len()).then_some(selected + 1)
+            }
+        }
+    }
+
+    fn advance_navigation_animation(&mut self, now: Instant) -> bool {
+        let elapsed = now
+            .saturating_duration_since(self.navigation_last_tick)
+            .as_secs_f32();
+        self.navigation_last_tick = now;
+        let should_show = self
+            .navigation_target
+            .is_some_and(|direction| self.navigation_available(direction))
+            && now.saturating_duration_since(self.navigation_target_since) >= NAVIGATION_SHOW_DELAY;
+        let previous = self.navigation_opacity;
+        self.navigation_opacity =
+            navigation_opacity_after(self.navigation_opacity, elapsed, should_show);
+        if self.navigation_opacity <= 0.0 && self.navigation_target.is_none() {
+            self.navigation_displayed = None;
+        }
+        (self.navigation_opacity - previous).abs() > f32::EPSILON
     }
 
     fn image_destination(&self, canvas: RectF) -> Option<RectF> {
@@ -2191,6 +2419,14 @@ fn image_exceeds_canvas(canvas: RectF, width: f32, height: f32) -> bool {
     width > canvas.width || height > canvas.height
 }
 
+fn navigation_opacity_after(current: f32, elapsed_seconds: f32, showing: bool) -> f32 {
+    if showing {
+        (current + elapsed_seconds / NAVIGATION_FADE_IN_SECONDS).min(1.0)
+    } else {
+        (current - elapsed_seconds / NAVIGATION_FADE_OUT_SECONDS).max(0.0)
+    }
+}
+
 fn create_d3d_device() -> Result<ID3D11Device> {
     let mut device = None;
     let hardware_result = unsafe {
@@ -2331,6 +2567,14 @@ mod tests {
         assert!(image_exceeds_canvas(canvas, 801.0, 500.0));
         assert!(image_exceeds_canvas(canvas, 700.0, 601.0));
         assert!(!image_exceeds_canvas(canvas, 800.0, 600.0));
+    }
+
+    #[test]
+    fn navigation_buttons_fade_in_faster_than_they_fade_out() {
+        assert_eq!(navigation_opacity_after(0.0, 0.07, true), 0.5);
+        assert_eq!(navigation_opacity_after(1.0, 0.16, false), 0.5);
+        assert_eq!(navigation_opacity_after(0.9, 1.0, true), 1.0);
+        assert_eq!(navigation_opacity_after(0.1, 1.0, false), 0.0);
     }
 
     #[test]

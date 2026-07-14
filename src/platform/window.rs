@@ -27,14 +27,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
     DispatchMessageW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW,
     GetWindowLongPtrW, GetWindowPlacement, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, IDC_ARROW,
-    IDC_HAND, IsZoomed, LoadCursorW, LoadIconW, MINMAXINFO, MSG, PostMessageW, PostQuitMessage,
-    RegisterClassExW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor,
-    SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
-    WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCCALCSIZE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT,
-    WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    IDC_HAND, IsZoomed, KillTimer, LoadCursorW, LoadIconW, MINMAXINFO, MSG, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SW_SHOW,
+    SW_SHOWMAXIMIZED, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_APP, WM_DESTROY, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE,
+    WM_PAINT, WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
@@ -46,6 +46,8 @@ const DEFAULT_DEMO_FILE: &str = "PixPin_2026-01-10_23-22-10.jpg";
 const WM_APP_IMAGE_READY: u32 = WM_APP + 1;
 const WM_APP_DIRECTORY_READY: u32 = WM_APP + 2;
 const WM_APP_THUMBNAIL_READY: u32 = WM_APP + 3;
+const NAVIGATION_TIMER_ID: usize = 1;
+const NAVIGATION_TIMER_INTERVAL_MS: u32 = 16;
 
 struct ImageLoadResult {
     generation: u64,
@@ -311,6 +313,7 @@ unsafe extern "system" fn window_proc(
                 let pointer_hot_changed = state
                     .renderer
                     .set_pointer_hot(signed_low_word(lparam.0), signed_high_word(lparam.0));
+                update_navigation_timer(hwnd, state);
                 if state.slider_dragging {
                     state
                         .renderer
@@ -360,10 +363,12 @@ unsafe extern "system" fn window_proc(
             unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
         }
         WM_MOUSELEAVE => {
-            if let Some(state) = unsafe { state_mut(hwnd) }
-                && state.renderer.clear_pointer_hot()
-            {
-                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                let changed = state.renderer.clear_pointer_hot();
+                update_navigation_timer(hwnd, state);
+                if changed {
+                    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                }
             }
             LRESULT(0)
         }
@@ -402,6 +407,16 @@ unsafe extern "system" fn window_proc(
             }
             if let Some(fullscreen) = fullscreen_request {
                 let _ = unsafe { set_fullscreen(hwnd, fullscreen) };
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == NAVIGATION_TIMER_ID => {
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                let changed = state.renderer.tick_navigation_animation();
+                update_navigation_timer(hwnd, state);
+                if changed {
+                    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                }
             }
             LRESULT(0)
         }
@@ -581,6 +596,7 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
+            let _ = unsafe { KillTimer(Some(hwnd), NAVIGATION_TIMER_ID) };
             if let Some(state) = unsafe { state_mut(hwnd) }
                 && let Some(saved) = saved_window_state(hwnd, state)
             {
@@ -747,6 +763,21 @@ fn queue_thumbnail_requests(state: &mut WindowState) {
         state
             .renderer
             .mark_thumbnail_queued(request.index, &request.path);
+    }
+}
+
+fn update_navigation_timer(hwnd: HWND, state: &WindowState) {
+    if state.renderer.navigation_animation_active() {
+        let _ = unsafe {
+            SetTimer(
+                Some(hwnd),
+                NAVIGATION_TIMER_ID,
+                NAVIGATION_TIMER_INTERVAL_MS,
+                None,
+            )
+        };
+    } else {
+        let _ = unsafe { KillTimer(Some(hwnd), NAVIGATION_TIMER_ID) };
     }
 }
 
