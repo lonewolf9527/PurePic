@@ -3,24 +3,32 @@ use crate::render::icons::IconSet;
 use purepic::ui::chrome::{
     CAPTION_BUTTON_WIDTH_DIP, CaptionButton, title_action_button_rect, title_action_separator_x,
 };
-use purepic::ui::controls::{StatusControl, StatusControlsLayout};
+use purepic::ui::controls::{
+    StatusControl, StatusControlsLayout, ThumbnailControl, ThumbnailControlsLayout,
+};
 use purepic::ui::icon::Icon;
-use purepic::ui::layout::{LayoutInput, RectF, WindowLayout, compute_layout};
+use purepic::ui::layout::{LayoutInput, RectF, ThumbnailDock, WindowLayout, compute_layout};
+use purepic::ui::thumbnail::{
+    THUMBNAIL_CACHE_BUDGET_BYTES, THUMBNAIL_CONTENT_DIP, THUMBNAIL_ITEM_EXTENT_DIP,
+    THUMBNAIL_QUEUE_CAPACITY, centered_scroll_offset, max_scroll_offset,
+    prioritized_thumbnail_indices, visible_prefetch_range,
+};
 use purepic::ui::zoom::{
     MAX_ZOOM, MIN_ZOOM, SizeF, fit_zoom, slider_to_zoom, step_zoom, zoom_to_slider,
 };
+use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::{E_FAIL, HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
     D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED, D2D1_FILL_MODE_WINDING, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
-    D2D1_ELLIPSE, D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Brush,
-    ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
-    ID2D1StrokeStyle,
+    D2D1_ANTIALIAS_MODE_ALIASED, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE,
+    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE, D2D1_FACTORY_OPTIONS,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT,
+    D2D1CreateFactory, ID2D1Bitmap1, ID2D1Brush, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
+    ID2D1Image, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
@@ -49,6 +57,8 @@ const STATUS_CONTROL_BACKGROUND: D2D1_COLOR_F = color(0x34, 0x34, 0x34);
 const MENU_BACKGROUND: D2D1_COLOR_F = color(0x2E, 0x2E, 0x2E);
 const MENU_HOVER_BACKGROUND: D2D1_COLOR_F = color(0x3A, 0x3A, 0x3A);
 const MENU_SELECTED_BACKGROUND: D2D1_COLOR_F = color(0x17, 0x6F, 0x71);
+const THUMBNAIL_BACKGROUND: D2D1_COLOR_F = color(0x27, 0x27, 0x27);
+const THUMBNAIL_PLACEHOLDER: D2D1_COLOR_F = color(0x20, 0x20, 0x20);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
 const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
 const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
@@ -80,6 +90,8 @@ pub struct Renderer {
     menu_brush: ID2D1SolidColorBrush,
     menu_hover_brush: ID2D1SolidColorBrush,
     menu_selected_brush: ID2D1SolidColorBrush,
+    thumbnail_brush: ID2D1SolidColorBrush,
+    thumbnail_placeholder_brush: ID2D1SolidColorBrush,
     primary_text_brush: ID2D1SolidColorBrush,
     secondary_text_brush: ID2D1SolidColorBrush,
     muted_text_brush: ID2D1SolidColorBrush,
@@ -109,6 +121,18 @@ pub struct Renderer {
     fullscreen: bool,
     status_hot: Option<StatusControl>,
     zoom_menu_hot: Option<usize>,
+    thumbnail_visible: bool,
+    thumbnail_dock: ThumbnailDock,
+    thumbnail_items: Vec<RenderedThumbnailItem>,
+    thumbnail_selected: Option<usize>,
+    thumbnail_hot: Option<usize>,
+    thumbnail_control_hot: Option<ThumbnailControl>,
+    dock_menu_open: bool,
+    dock_menu_hot: Option<ThumbnailDock>,
+    thumbnail_scroll: f32,
+    thumbnail_cache_bytes: usize,
+    thumbnail_cache_stamp: u64,
+    thumbnail_scroll_drag: Option<ThumbnailScrollDrag>,
     pan_x: f32,
     pan_y: f32,
     pan_last_position: Option<(f32, f32)>,
@@ -120,14 +144,57 @@ struct RenderedImage {
     height: u32,
 }
 
+struct RenderedThumbnailItem {
+    path: PathBuf,
+    state: ThumbnailLoadState,
+    image: Option<RenderedImage>,
+    byte_size: usize,
+    target_size_px: u32,
+    last_used: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ThumbnailScrollDrag {
+    pointer_origin: f32,
+    scroll_origin: f32,
+    track_extent: f32,
+    thumb_extent: f32,
+    maximum: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ThumbnailScrollbar {
+    track: RectF,
+    thumb: RectF,
+    maximum: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ThumbnailLoadState {
+    #[default]
+    Empty,
+    Queued,
+    Ready,
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PointerAction {
     #[default]
     None,
     BeginSlider,
+    BeginThumbnailScroll,
     BeginPan,
     ToggleFullscreen,
     ToggleContextMenu,
+    OpenThumbnail(usize),
+}
+
+#[derive(Clone, Debug)]
+pub struct ThumbnailRequest {
+    pub index: usize,
+    pub path: PathBuf,
+    pub target_size_px: u32,
 }
 
 impl Renderer {
@@ -193,6 +260,10 @@ impl Renderer {
             unsafe { context.CreateSolidColorBrush(&MENU_HOVER_BACKGROUND, None)? };
         let menu_selected_brush =
             unsafe { context.CreateSolidColorBrush(&MENU_SELECTED_BACKGROUND, None)? };
+        let thumbnail_brush =
+            unsafe { context.CreateSolidColorBrush(&THUMBNAIL_BACKGROUND, None)? };
+        let thumbnail_placeholder_brush =
+            unsafe { context.CreateSolidColorBrush(&THUMBNAIL_PLACEHOLDER, None)? };
         let primary_text_brush = unsafe { context.CreateSolidColorBrush(&PRIMARY_TEXT, None)? };
         let secondary_text_brush = unsafe { context.CreateSolidColorBrush(&SECONDARY_TEXT, None)? };
         let muted_text_brush = unsafe { context.CreateSolidColorBrush(&MUTED_TEXT, None)? };
@@ -214,6 +285,8 @@ impl Renderer {
             menu_brush,
             menu_hover_brush,
             menu_selected_brush,
+            thumbnail_brush,
+            thumbnail_placeholder_brush,
             primary_text_brush,
             secondary_text_brush,
             muted_text_brush,
@@ -243,6 +316,18 @@ impl Renderer {
             fullscreen: false,
             status_hot: None,
             zoom_menu_hot: None,
+            thumbnail_visible: false,
+            thumbnail_dock: ThumbnailDock::Bottom,
+            thumbnail_items: Vec::new(),
+            thumbnail_selected: None,
+            thumbnail_hot: None,
+            thumbnail_control_hot: None,
+            dock_menu_open: false,
+            dock_menu_hot: None,
+            thumbnail_scroll: 0.0,
+            thumbnail_cache_bytes: 0,
+            thumbnail_cache_stamp: 0,
+            thumbnail_scroll_drag: None,
             pan_x: 0.0,
             pan_y: 0.0,
             pan_last_position: None,
@@ -264,28 +349,29 @@ impl Renderer {
             48.0,
         );
         let status_left = RectF::new(
-            layout.status_bar.x + 18.0,
+            layout.status_bar.x + 112.0,
             layout.status_bar.y,
-            (layout.status_bar.width - 440.0).max(0.0),
+            (layout.status_bar.width - 534.0).max(0.0),
             layout.status_bar.height,
         );
         let controls = StatusControlsLayout::compute(layout.status_bar);
+        let thumbnail_controls = ThumbnailControlsLayout::compute(layout.status_bar);
 
         unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&BACKGROUND));
 
-            if let Some(image) = &self.image {
-                if let Some(destination) = self.image_destination(layout.canvas) {
-                    self.context.DrawBitmap(
-                        &image.bitmap,
-                        Some(&to_d2d_rect(destination)),
-                        1.0,
-                        D2D1_INTERPOLATION_MODE_LINEAR,
-                        None,
-                        None,
-                    );
-                }
+            if let Some(image) = &self.image
+                && let Some(destination) = self.image_destination(layout.canvas)
+            {
+                self.context.DrawBitmap(
+                    &image.bitmap,
+                    Some(&to_d2d_rect(destination)),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_LINEAR,
+                    None,
+                    None,
+                );
             }
 
             if !self.message.is_empty() {
@@ -296,6 +382,11 @@ impl Renderer {
                     canvas_center,
                     &self.muted_text_brush,
                 );
+            }
+            if !self.fullscreen
+                && let Some(panel) = layout.thumbnail_panel
+            {
+                self.draw_thumbnails(panel);
             }
             if !self.fullscreen {
                 // The chrome is an overlay: large, zoomed images may extend beyond the
@@ -317,6 +408,7 @@ impl Renderer {
                 self.draw_title_brand(layout.title_bar);
                 self.draw_title_action(layout.title_bar);
                 self.draw_caption_buttons(layout.title_bar);
+                self.draw_thumbnail_controls(thumbnail_controls);
                 draw_text(
                     &self.context,
                     &self.status,
@@ -327,6 +419,9 @@ impl Renderer {
                 self.draw_status_controls(controls, layout.canvas);
                 if self.zoom_menu_open {
                     self.draw_zoom_menu(controls.zoom_menu, layout.canvas);
+                }
+                if self.dock_menu_open {
+                    self.draw_dock_menu(thumbnail_controls.dock_menu);
                 }
                 self.draw_status_tooltip(controls, layout.canvas);
                 self.draw_title_action_tooltip(layout.title_bar, layout.canvas);
@@ -366,6 +461,14 @@ impl Renderer {
 
     pub fn set_dpi(&mut self, dpi: u32) {
         self.dpi = dpi.max(1);
+        let target_size_px = self.thumbnail_target_size_px();
+        for item in &mut self.thumbnail_items {
+            if item.state == ThumbnailLoadState::Queued
+                || (item.image.is_some() && item.target_size_px != target_size_px)
+            {
+                item.state = ThumbnailLoadState::Empty;
+            }
+        }
         unsafe {
             self.context.SetDpi(self.dpi as f32, self.dpi as f32);
         }
@@ -389,11 +492,17 @@ impl Renderer {
         self.status_hot = None;
         self.zoom_menu_hot = None;
         self.title_action_hot = false;
+        self.thumbnail_hot = None;
+        self.thumbnail_control_hot = None;
+        self.dock_menu_open = false;
+        self.dock_menu_hot = None;
+        self.thumbnail_scroll_drag = None;
     }
 
     pub fn close_zoom_menu(&mut self) -> bool {
         self.zoom_menu_hot = None;
-        std::mem::take(&mut self.zoom_menu_open)
+        self.dock_menu_hot = None;
+        std::mem::take(&mut self.zoom_menu_open) | std::mem::take(&mut self.dock_menu_open)
     }
 
     pub fn set_pointer_hot(&mut self, x_px: i32, y_px: i32) -> bool {
@@ -414,24 +523,58 @@ impl Renderer {
         };
         let title_action_hot =
             !self.fullscreen && title_action_button_rect(layout.title_bar).contains(x, y);
+        let thumbnail_hot = if self.fullscreen {
+            None
+        } else {
+            layout
+                .thumbnail_panel
+                .and_then(|panel| self.thumbnail_index_at(panel, x, y))
+        };
+        let thumbnail_control_hot = if self.fullscreen {
+            None
+        } else {
+            ThumbnailControlsLayout::compute(layout.status_bar).hit_test(x, y)
+        };
+        let dock_menu_hot = if self.dock_menu_open && !self.fullscreen {
+            dock_at(
+                self.dock_menu_rect(ThumbnailControlsLayout::compute(layout.status_bar).dock_menu),
+                x,
+                y,
+            )
+        } else {
+            None
+        };
         if self.status_hot == status_hot
             && self.zoom_menu_hot == zoom_menu_hot
             && self.title_action_hot == title_action_hot
+            && self.thumbnail_hot == thumbnail_hot
+            && self.thumbnail_control_hot == thumbnail_control_hot
+            && self.dock_menu_hot == dock_menu_hot
         {
             return false;
         }
         self.status_hot = status_hot;
         self.zoom_menu_hot = zoom_menu_hot;
         self.title_action_hot = title_action_hot;
+        self.thumbnail_hot = thumbnail_hot;
+        self.thumbnail_control_hot = thumbnail_control_hot;
+        self.dock_menu_hot = dock_menu_hot;
         true
     }
 
     pub fn clear_pointer_hot(&mut self) -> bool {
-        let changed =
-            self.status_hot.is_some() || self.zoom_menu_hot.is_some() || self.title_action_hot;
+        let changed = self.status_hot.is_some()
+            || self.zoom_menu_hot.is_some()
+            || self.title_action_hot
+            || self.thumbnail_hot.is_some()
+            || self.thumbnail_control_hot.is_some()
+            || self.dock_menu_hot.is_some();
         self.status_hot = None;
         self.zoom_menu_hot = None;
         self.title_action_hot = false;
+        self.thumbnail_hot = None;
+        self.thumbnail_control_hot = None;
+        self.dock_menu_hot = None;
         changed
     }
 
@@ -446,6 +589,24 @@ impl Renderer {
         }
         let controls = StatusControlsLayout::compute(layout.status_bar);
 
+        if self.dock_menu_open {
+            if let Some(dock) = dock_at(
+                self.dock_menu_rect(ThumbnailControlsLayout::compute(layout.status_bar).dock_menu),
+                x,
+                y,
+            ) {
+                self.thumbnail_dock = dock;
+                self.thumbnail_scroll_drag = None;
+                self.dock_menu_open = false;
+                self.dock_menu_hot = None;
+                self.center_selected_thumbnail();
+                return PointerAction::None;
+            }
+            self.dock_menu_open = false;
+            self.dock_menu_hot = None;
+            return PointerAction::None;
+        }
+
         if self.zoom_menu_open {
             if let Some(choice) = zoom_choice_at(self.zoom_menu_rect(controls.zoom_menu), x, y) {
                 self.apply_zoom_choice(choice);
@@ -456,6 +617,34 @@ impl Renderer {
             self.zoom_menu_open = false;
             self.zoom_menu_hot = None;
             return PointerAction::None;
+        }
+
+        match ThumbnailControlsLayout::compute(layout.status_bar).hit_test(x, y) {
+            Some(ThumbnailControl::Toggle) => {
+                self.thumbnail_visible = !self.thumbnail_visible;
+                self.thumbnail_scroll_drag = None;
+                self.center_selected_thumbnail();
+                return PointerAction::None;
+            }
+            Some(ThumbnailControl::DockMenu) => {
+                self.dock_menu_open = true;
+                self.dock_menu_hot = None;
+                return PointerAction::None;
+            }
+            None => {}
+        }
+
+        if let Some(panel) = layout.thumbnail_panel
+            && self.begin_thumbnail_scroll(panel, x, y)
+        {
+            return PointerAction::BeginThumbnailScroll;
+        }
+
+        if let Some(index) = layout
+            .thumbnail_panel
+            .and_then(|panel| self.thumbnail_index_at(panel, x, y))
+        {
+            return PointerAction::OpenThumbnail(index);
         }
 
         match controls.hit_test(x, y) {
@@ -506,6 +695,26 @@ impl Renderer {
         self.pan_last_position = None;
     }
 
+    pub fn pointer_move_thumbnail_scroll(&mut self, x_px: i32, y_px: i32) {
+        let (x, y) = self.point_to_dip(x_px, y_px);
+        let Some(drag) = self.thumbnail_scroll_drag else {
+            return;
+        };
+        let pointer = if self.thumbnail_dock.is_horizontal() {
+            x
+        } else {
+            y
+        };
+        let travel = (drag.track_extent - drag.thumb_extent).max(1.0);
+        self.thumbnail_scroll = (drag.scroll_origin
+            + (pointer - drag.pointer_origin) * drag.maximum / travel)
+            .clamp(0.0, drag.maximum);
+    }
+
+    pub fn end_thumbnail_scroll(&mut self) {
+        self.thumbnail_scroll_drag = None;
+    }
+
     pub fn shows_pan_cursor(&self, x_px: i32, y_px: i32) -> bool {
         let (x, y) = self.point_to_dip(x_px, y_px);
         let canvas = self.current_layout().canvas;
@@ -520,6 +729,204 @@ impl Renderer {
         }
         self.image_destination(canvas)
             .is_some_and(|destination| destination.contains(x, y))
+    }
+
+    pub fn set_thumbnail_catalog(&mut self, paths: Vec<PathBuf>, current_path: &Path) {
+        self.thumbnail_items = paths
+            .into_iter()
+            .map(|path| RenderedThumbnailItem {
+                path,
+                state: ThumbnailLoadState::Empty,
+                image: None,
+                byte_size: 0,
+                target_size_px: 0,
+                last_used: 0,
+            })
+            .collect();
+        self.thumbnail_selected = self
+            .thumbnail_items
+            .iter()
+            .position(|item| paths_equal(&item.path, current_path));
+        self.thumbnail_hot = None;
+        self.thumbnail_cache_bytes = 0;
+        self.thumbnail_cache_stamp = 0;
+        self.center_selected_thumbnail();
+    }
+
+    pub fn set_thumbnail_preferences(&mut self, visible: bool, dock: ThumbnailDock) {
+        self.thumbnail_visible = visible;
+        self.thumbnail_dock = dock;
+        self.center_selected_thumbnail();
+    }
+
+    pub fn thumbnail_preferences(&self) -> (bool, ThumbnailDock) {
+        (self.thumbnail_visible, self.thumbnail_dock)
+    }
+
+    pub fn thumbnail_requests(&mut self) -> Vec<ThumbnailRequest> {
+        let Some(panel) = self.current_layout().thumbnail_panel else {
+            return Vec::new();
+        };
+        let viewport = self.thumbnail_viewport_extent(panel);
+        self.thumbnail_scroll = self
+            .thumbnail_scroll
+            .clamp(0.0, max_scroll_offset(self.thumbnail_items.len(), viewport));
+        let indices = prioritized_thumbnail_indices(
+            self.thumbnail_items.len(),
+            self.thumbnail_scroll,
+            viewport,
+            self.thumbnail_selected,
+        );
+        for item in &mut self.thumbnail_items {
+            if item.state == ThumbnailLoadState::Queued {
+                item.state = ThumbnailLoadState::Empty;
+            }
+        }
+        self.thumbnail_cache_stamp = self.thumbnail_cache_stamp.wrapping_add(1);
+        let stamp = self.thumbnail_cache_stamp;
+        let target_size_px = self.thumbnail_target_size_px();
+        let mut requests = Vec::new();
+        for index in indices {
+            let item = &mut self.thumbnail_items[index];
+            if item.state == ThumbnailLoadState::Ready {
+                item.last_used = stamp;
+            } else if item.state == ThumbnailLoadState::Empty {
+                requests.push(ThumbnailRequest {
+                    index,
+                    path: item.path.clone(),
+                    target_size_px,
+                });
+                if requests.len() == THUMBNAIL_QUEUE_CAPACITY {
+                    break;
+                }
+            }
+        }
+        requests
+    }
+
+    pub fn mark_thumbnail_queued(&mut self, index: usize, path: &Path) {
+        if let Some(item) = self.thumbnail_items.get_mut(index)
+            && item.state == ThumbnailLoadState::Empty
+            && paths_equal(&item.path, path)
+        {
+            item.state = ThumbnailLoadState::Queued;
+        }
+    }
+
+    pub fn set_thumbnail_image(
+        &mut self,
+        index: usize,
+        path: &Path,
+        target_size_px: u32,
+        image: DecodedImage,
+    ) -> Result<()> {
+        let Some(item) = self.thumbnail_items.get(index) else {
+            return Ok(());
+        };
+        if !paths_equal(&item.path, path) {
+            return Ok(());
+        }
+        if target_size_px != self.thumbnail_target_size_px() {
+            if item.state == ThumbnailLoadState::Queued {
+                self.thumbnail_items[index].state = ThumbnailLoadState::Empty;
+            }
+            return Ok(());
+        }
+        let properties = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+            ..Default::default()
+        };
+        let bitmap = unsafe {
+            self.context.CreateBitmap(
+                D2D_SIZE_U {
+                    width: image.width,
+                    height: image.height,
+                },
+                Some(image.pixels.as_ptr().cast()),
+                image.stride,
+                &properties,
+            )?
+        };
+        let byte_size = image.pixels.len();
+        self.thumbnail_cache_stamp = self.thumbnail_cache_stamp.wrapping_add(1);
+        let item = &mut self.thumbnail_items[index];
+        self.thumbnail_cache_bytes = self
+            .thumbnail_cache_bytes
+            .saturating_sub(item.byte_size)
+            .saturating_add(byte_size);
+        item.state = ThumbnailLoadState::Ready;
+        item.image = Some(RenderedImage {
+            bitmap,
+            width: image.width,
+            height: image.height,
+        });
+        item.byte_size = byte_size;
+        item.target_size_px = target_size_px;
+        item.last_used = self.thumbnail_cache_stamp;
+        self.evict_thumbnail_cache();
+        Ok(())
+    }
+
+    pub fn set_thumbnail_failed(&mut self, index: usize, path: &Path, target_size_px: u32) {
+        if target_size_px != self.thumbnail_target_size_px() {
+            if let Some(item) = self.thumbnail_items.get_mut(index)
+                && item.state == ThumbnailLoadState::Queued
+                && paths_equal(&item.path, path)
+            {
+                item.state = ThumbnailLoadState::Empty;
+            }
+            return;
+        }
+        if let Some(item) = self.thumbnail_items.get_mut(index)
+            && paths_equal(&item.path, path)
+        {
+            if item.image.is_some() {
+                item.state = ThumbnailLoadState::Ready;
+            } else {
+                self.thumbnail_cache_bytes =
+                    self.thumbnail_cache_bytes.saturating_sub(item.byte_size);
+                item.state = ThumbnailLoadState::Failed;
+                item.image = None;
+                item.byte_size = 0;
+                item.target_size_px = 0;
+            }
+        }
+    }
+
+    pub fn thumbnail_path(&self, index: usize) -> Option<PathBuf> {
+        self.thumbnail_items
+            .get(index)
+            .map(|item| item.path.clone())
+    }
+
+    pub fn select_thumbnail(&mut self, index: usize) {
+        if index < self.thumbnail_items.len() {
+            self.thumbnail_selected = Some(index);
+            self.center_selected_thumbnail();
+        }
+    }
+
+    pub fn scroll_thumbnails(&mut self, x_px: i32, y_px: i32, wheel_delta: i16) -> bool {
+        let (x, y) = self.point_to_dip(x_px, y_px);
+        let Some(panel) = self.current_layout().thumbnail_panel else {
+            return false;
+        };
+        if !panel.contains(x, y) {
+            return false;
+        }
+        let viewport = self.thumbnail_viewport_extent(panel);
+        let maximum = max_scroll_offset(self.thumbnail_items.len(), viewport);
+        let previous = self.thumbnail_scroll;
+        self.thumbnail_scroll = (self.thumbnail_scroll
+            - wheel_delta as f32 / 120.0 * THUMBNAIL_ITEM_EXTENT_DIP * 3.0)
+            .clamp(0.0, maximum);
+        (self.thumbnail_scroll - previous).abs() > f32::EPSILON
     }
 
     pub fn set_loading(&mut self, path: &std::path::Path) {
@@ -768,6 +1175,108 @@ impl Renderer {
         }
     }
 
+    unsafe fn draw_thumbnails(&self, panel: RectF) {
+        unsafe {
+            self.context
+                .FillRectangle(&to_d2d_rect(panel), &self.thumbnail_brush);
+            self.context
+                .PushAxisAlignedClip(&to_d2d_rect(panel), D2D1_ANTIALIAS_MODE_ALIASED);
+        }
+        let viewport = self.thumbnail_viewport_extent(panel);
+        let range =
+            visible_prefetch_range(self.thumbnail_items.len(), self.thumbnail_scroll, viewport);
+        for index in range {
+            let cell = self.thumbnail_item_rect(panel, index);
+            let selected = self.thumbnail_selected == Some(index);
+            let hovered = self.thumbnail_hot == Some(index);
+            let frame = centered_square(cell, 96.0);
+            let content = centered_square(cell, THUMBNAIL_CONTENT_DIP);
+            unsafe {
+                if selected {
+                    self.context
+                        .FillRoundedRectangle(&to_d2d_rounded_rect(frame, 7.0), &self.accent_brush);
+                } else if hovered {
+                    self.context.FillRoundedRectangle(
+                        &to_d2d_rounded_rect(frame, 7.0),
+                        &self.status_control_brush,
+                    );
+                }
+                self.context.FillRoundedRectangle(
+                    &to_d2d_rounded_rect(content, 4.0),
+                    &self.thumbnail_placeholder_brush,
+                );
+            }
+            if let Some(image) = self.thumbnail_items[index].image.as_ref() {
+                let scale =
+                    (content.width / image.width as f32).min(content.height / image.height as f32);
+                let destination = RectF::new(
+                    content.x + (content.width - image.width as f32 * scale) * 0.5,
+                    content.y + (content.height - image.height as f32 * scale) * 0.5,
+                    image.width as f32 * scale,
+                    image.height as f32 * scale,
+                );
+                unsafe {
+                    self.context.DrawBitmap(
+                        &image.bitmap,
+                        Some(&to_d2d_rect(destination)),
+                        1.0,
+                        D2D1_INTERPOLATION_MODE_LINEAR,
+                        None,
+                        None,
+                    );
+                }
+            } else if self.thumbnail_items[index].state == ThumbnailLoadState::Failed {
+                let inset = 30.0;
+                let top_left = Vector2 {
+                    X: content.x + inset,
+                    Y: content.y + inset,
+                };
+                let top_right = Vector2 {
+                    X: content.right() - inset,
+                    Y: content.y + inset,
+                };
+                let bottom_left = Vector2 {
+                    X: content.x + inset,
+                    Y: content.bottom() - inset,
+                };
+                let bottom_right = Vector2 {
+                    X: content.right() - inset,
+                    Y: content.bottom() - inset,
+                };
+                unsafe {
+                    self.context.DrawLine(
+                        top_left,
+                        bottom_right,
+                        &self.muted_text_brush,
+                        1.5,
+                        None,
+                    );
+                    self.context.DrawLine(
+                        top_right,
+                        bottom_left,
+                        &self.muted_text_brush,
+                        1.5,
+                        None,
+                    );
+                }
+            }
+        }
+        unsafe { self.draw_thumbnail_scrollbar(panel) };
+        unsafe { self.context.PopAxisAlignedClip() };
+    }
+
+    unsafe fn draw_thumbnail_scrollbar(&self, panel: RectF) {
+        let Some(scrollbar) = self.thumbnail_scrollbar(panel) else {
+            return;
+        };
+        unsafe {
+            self.context.FillRoundedRectangle(
+                &to_d2d_rounded_rect(scrollbar.thumb, 1.5),
+                &self.muted_text_brush,
+            );
+        }
+    }
+
     unsafe fn draw_status_controls(&self, controls: StatusControlsLayout, canvas: RectF) {
         let icon_inset = 8.0;
         unsafe {
@@ -874,6 +1383,126 @@ impl Renderer {
         }
     }
 
+    unsafe fn draw_thumbnail_controls(&self, controls: ThumbnailControlsLayout) {
+        unsafe {
+            if self.thumbnail_control_hot == Some(ThumbnailControl::Toggle) {
+                self.context.FillRoundedRectangle(
+                    &to_d2d_rounded_rect(controls.toggle, 6.0),
+                    &self.caption_hover_brush,
+                );
+            }
+            self.context.FillRoundedRectangle(
+                &to_d2d_rounded_rect(controls.dock_menu, 6.0),
+                &self.status_control_brush,
+            );
+            if self.thumbnail_control_hot == Some(ThumbnailControl::DockMenu) {
+                self.context.FillRoundedRectangle(
+                    &to_d2d_rounded_rect(controls.dock_menu, 6.0),
+                    &self.caption_hover_brush,
+                );
+            }
+            draw_icon(
+                &self.context,
+                &self.d2d_factory,
+                &self.icons.thumbnails,
+                centered_square(controls.toggle, 20.0),
+                if self.thumbnail_visible {
+                    &self.accent_brush
+                } else {
+                    &self.primary_text_brush
+                },
+            );
+            let dock_icon_rect = RectF::new(
+                controls.dock_menu.x + 7.0,
+                controls.dock_menu.y + 8.0,
+                20.0,
+                20.0,
+            );
+            draw_icon(
+                &self.context,
+                &self.d2d_factory,
+                self.dock_icon(self.thumbnail_dock),
+                dock_icon_rect,
+                &self.primary_text_brush,
+            );
+            let chevron = RectF::new(
+                controls.dock_menu.right() - 14.0,
+                controls.dock_menu.y + 12.0,
+                8.0,
+                12.0,
+            );
+            draw_icon(
+                &self.context,
+                &self.d2d_factory,
+                &self.icons.chevron_down,
+                chevron,
+                &self.primary_text_brush,
+            );
+            let separator = RectF::new(
+                controls.dock_menu.right() + 6.0,
+                controls.dock_menu.y + 6.0,
+                1.0,
+                controls.dock_menu.height - 12.0,
+            );
+            self.context
+                .FillRectangle(&to_d2d_rect(separator), &self.muted_text_brush);
+        }
+    }
+
+    unsafe fn draw_dock_menu(&self, button: RectF) {
+        let menu = self.dock_menu_rect(button);
+        unsafe {
+            self.context
+                .FillRoundedRectangle(&to_d2d_rounded_rect(menu, 8.0), &self.menu_brush);
+        }
+        for (index, dock) in DOCK_CHOICES.iter().copied().enumerate() {
+            let row = RectF::new(menu.x, menu.y + index as f32 * 30.0, menu.width, 30.0);
+            let brush = if dock == self.thumbnail_dock {
+                Some(&self.menu_selected_brush)
+            } else if self.dock_menu_hot == Some(dock) {
+                Some(&self.menu_hover_brush)
+            } else {
+                None
+            };
+            if let Some(brush) = brush {
+                unsafe {
+                    self.context.FillRoundedRectangle(
+                        &to_d2d_rounded_rect(
+                            RectF::new(row.x + 3.0, row.y + 2.0, row.width - 6.0, 26.0),
+                            5.0,
+                        ),
+                        brush,
+                    );
+                }
+            }
+            unsafe {
+                draw_icon(
+                    &self.context,
+                    &self.d2d_factory,
+                    self.dock_icon(dock),
+                    RectF::new(row.x + 8.0, row.y + 6.0, 18.0, 18.0),
+                    &self.primary_text_brush,
+                );
+                draw_text(
+                    &self.context,
+                    dock_label(dock),
+                    &self.status_format,
+                    RectF::new(row.x + 34.0, row.y, row.width - 38.0, row.height),
+                    &self.primary_text_brush,
+                );
+            }
+        }
+    }
+
+    fn dock_icon(&self, dock: ThumbnailDock) -> &Icon {
+        match dock {
+            ThumbnailDock::Top => &self.icons.dock_top,
+            ThumbnailDock::Bottom => &self.icons.dock_bottom,
+            ThumbnailDock::Left => &self.icons.dock_left,
+            ThumbnailDock::Right => &self.icons.dock_right,
+        }
+    }
+
     unsafe fn draw_zoom_menu(&self, button: RectF, canvas: RectF) {
         let menu = self.zoom_menu_rect(button);
         unsafe {
@@ -958,7 +1587,11 @@ impl Renderer {
     }
 
     fn current_layout(&self) -> WindowLayout {
-        let mut layout = compute_layout(LayoutInput::new(self.width_px, self.height_px, self.dpi));
+        let mut input = LayoutInput::new(self.width_px, self.height_px, self.dpi);
+        input.thumbnail_visible = self.thumbnail_visible && !self.thumbnail_items.is_empty();
+        input.thumbnail_dock = self.thumbnail_dock;
+        input.thumbnail_extent_dip = self.thumbnail_dock.default_extent_dip();
+        let mut layout = compute_layout(input);
         if self.fullscreen {
             layout.canvas = layout.client;
         }
@@ -1027,6 +1660,192 @@ impl Renderer {
         )
     }
 
+    fn thumbnail_viewport_extent(&self, panel: RectF) -> f32 {
+        if self.thumbnail_dock.is_horizontal() {
+            panel.width
+        } else {
+            panel.height
+        }
+    }
+
+    fn thumbnail_item_rect(&self, panel: RectF, index: usize) -> RectF {
+        let position = index as f32 * THUMBNAIL_ITEM_EXTENT_DIP - self.thumbnail_scroll;
+        if self.thumbnail_dock.is_horizontal() {
+            RectF::new(
+                panel.x + position,
+                panel.y,
+                THUMBNAIL_ITEM_EXTENT_DIP,
+                panel.height,
+            )
+        } else {
+            RectF::new(
+                panel.x,
+                panel.y + position,
+                panel.width,
+                THUMBNAIL_ITEM_EXTENT_DIP,
+            )
+        }
+    }
+
+    fn thumbnail_index_at(&self, panel: RectF, x: f32, y: f32) -> Option<usize> {
+        if !panel.contains(x, y) {
+            return None;
+        }
+        let position = if self.thumbnail_dock.is_horizontal() {
+            x - panel.x
+        } else {
+            y - panel.y
+        } + self.thumbnail_scroll;
+        let index = (position / THUMBNAIL_ITEM_EXTENT_DIP).floor().max(0.0) as usize;
+        (index < self.thumbnail_items.len()).then_some(index)
+    }
+
+    fn center_selected_thumbnail(&mut self) {
+        let Some(index) = self.thumbnail_selected else {
+            self.thumbnail_scroll = 0.0;
+            return;
+        };
+        let Some(panel) = self.current_layout().thumbnail_panel else {
+            return;
+        };
+        self.thumbnail_scroll = centered_scroll_offset(
+            index,
+            self.thumbnail_items.len(),
+            self.thumbnail_viewport_extent(panel),
+        );
+    }
+
+    fn thumbnail_scrollbar(&self, panel: RectF) -> Option<ThumbnailScrollbar> {
+        let viewport = self.thumbnail_viewport_extent(panel);
+        let content = self.thumbnail_items.len() as f32 * THUMBNAIL_ITEM_EXTENT_DIP;
+        let maximum = max_scroll_offset(self.thumbnail_items.len(), viewport);
+        if maximum <= 0.0 || content <= 0.0 {
+            return None;
+        }
+        let horizontal = self.thumbnail_dock.is_horizontal();
+        let track = if horizontal {
+            RectF::new(panel.x + 8.0, panel.bottom() - 6.0, panel.width - 16.0, 3.0)
+        } else {
+            RectF::new(panel.right() - 6.0, panel.y + 8.0, 3.0, panel.height - 16.0)
+        };
+        let track_extent = if horizontal {
+            track.width
+        } else {
+            track.height
+        };
+        let thumb_extent = (track_extent * viewport / content)
+            .max(16.0)
+            .min(track_extent);
+        let thumb_offset = (track_extent - thumb_extent) * self.thumbnail_scroll / maximum;
+        let thumb = if horizontal {
+            RectF::new(track.x + thumb_offset, track.y, thumb_extent, track.height)
+        } else {
+            RectF::new(track.x, track.y + thumb_offset, track.width, thumb_extent)
+        };
+        Some(ThumbnailScrollbar {
+            track,
+            thumb,
+            maximum,
+        })
+    }
+
+    fn begin_thumbnail_scroll(&mut self, panel: RectF, x: f32, y: f32) -> bool {
+        let Some(mut scrollbar) = self.thumbnail_scrollbar(panel) else {
+            return false;
+        };
+        let horizontal = self.thumbnail_dock.is_horizontal();
+        let hit_rect = if horizontal {
+            RectF::new(panel.x, panel.bottom() - 12.0, panel.width, 12.0)
+        } else {
+            RectF::new(panel.right() - 12.0, panel.y, 12.0, panel.height)
+        };
+        if !hit_rect.contains(x, y) {
+            return false;
+        }
+        let pointer = if horizontal { x } else { y };
+        let thumb_start = if horizontal {
+            scrollbar.thumb.x
+        } else {
+            scrollbar.thumb.y
+        };
+        let thumb_end = if horizontal {
+            scrollbar.thumb.right()
+        } else {
+            scrollbar.thumb.bottom()
+        };
+        if pointer < thumb_start || pointer >= thumb_end {
+            let track_start = if horizontal {
+                scrollbar.track.x
+            } else {
+                scrollbar.track.y
+            };
+            let track_extent = if horizontal {
+                scrollbar.track.width
+            } else {
+                scrollbar.track.height
+            };
+            let thumb_extent = if horizontal {
+                scrollbar.thumb.width
+            } else {
+                scrollbar.thumb.height
+            };
+            let travel = (track_extent - thumb_extent).max(1.0);
+            self.thumbnail_scroll = ((pointer - track_start - thumb_extent * 0.5) / travel
+                * scrollbar.maximum)
+                .clamp(0.0, scrollbar.maximum);
+            scrollbar = self
+                .thumbnail_scrollbar(panel)
+                .expect("scrollbar disappeared");
+        }
+        self.thumbnail_scroll_drag = Some(ThumbnailScrollDrag {
+            pointer_origin: pointer,
+            scroll_origin: self.thumbnail_scroll,
+            track_extent: if horizontal {
+                scrollbar.track.width
+            } else {
+                scrollbar.track.height
+            },
+            thumb_extent: if horizontal {
+                scrollbar.thumb.width
+            } else {
+                scrollbar.thumb.height
+            },
+            maximum: scrollbar.maximum,
+        });
+        true
+    }
+
+    fn evict_thumbnail_cache(&mut self) {
+        while self.thumbnail_cache_bytes > THUMBNAIL_CACHE_BUDGET_BYTES {
+            let candidate = self
+                .thumbnail_items
+                .iter()
+                .enumerate()
+                .filter(|(index, item)| {
+                    item.image.is_some() && Some(*index) != self.thumbnail_selected
+                })
+                .min_by_key(|(_, item)| item.last_used)
+                .map(|(index, _)| index);
+            let Some(index) = candidate else {
+                break;
+            };
+            let item = &mut self.thumbnail_items[index];
+            self.thumbnail_cache_bytes = self.thumbnail_cache_bytes.saturating_sub(item.byte_size);
+            if item.state == ThumbnailLoadState::Ready {
+                item.state = ThumbnailLoadState::Empty;
+            }
+            item.image = None;
+            item.byte_size = 0;
+            item.target_size_px = 0;
+        }
+    }
+
+    fn thumbnail_target_size_px(&self) -> u32 {
+        (THUMBNAIL_CONTENT_DIP * self.dpi as f32 / 96.0)
+            .ceil()
+            .max(1.0) as u32
+    }
+
     fn point_to_dip(&self, x: i32, y: i32) -> (f32, f32) {
         let scale = 96.0 / self.dpi as f32;
         (x as f32 * scale, y as f32 * scale)
@@ -1044,6 +1863,11 @@ impl Renderer {
     fn zoom_menu_rect(&self, button: RectF) -> RectF {
         let height = ZOOM_CHOICES.len() as f32 * 30.0;
         RectF::new(button.right() - 88.0, button.y - height - 6.0, 88.0, height)
+    }
+
+    fn dock_menu_rect(&self, button: RectF) -> RectF {
+        let height = DOCK_CHOICES.len() as f32 * 30.0;
+        RectF::new(button.x, button.y - height - 6.0, 104.0, height)
     }
 
     fn apply_zoom_choice(&mut self, choice: ZoomChoice) {
@@ -1075,6 +1899,30 @@ const ZOOM_CHOICES: [ZoomChoice; 10] = [
     ZoomChoice::Percent(4.00),
     ZoomChoice::Percent(8.00),
 ];
+
+const DOCK_CHOICES: [ThumbnailDock; 4] = [
+    ThumbnailDock::Top,
+    ThumbnailDock::Bottom,
+    ThumbnailDock::Left,
+    ThumbnailDock::Right,
+];
+
+fn dock_label(dock: ThumbnailDock) -> &'static str {
+    match dock {
+        ThumbnailDock::Top => "上方",
+        ThumbnailDock::Bottom => "下方",
+        ThumbnailDock::Left => "左侧",
+        ThumbnailDock::Right => "右侧",
+    }
+}
+
+fn dock_at(menu: RectF, x: f32, y: f32) -> Option<ThumbnailDock> {
+    if !menu.contains(x, y) {
+        return None;
+    }
+    let index = ((y - menu.y) / 30.0).floor() as usize;
+    DOCK_CHOICES.get(index).copied()
+}
 
 fn zoom_choice_label(choice: ZoomChoice) -> &'static str {
     match choice {
@@ -1352,6 +2200,11 @@ fn display_file_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
 }
 
 fn format_file_size(bytes: u64) -> String {

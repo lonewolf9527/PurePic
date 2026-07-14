@@ -33,6 +33,40 @@ pub struct StatusControlsLayout {
     pub fullscreen: RectF,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThumbnailControl {
+    Toggle,
+    DockMenu,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ThumbnailControlsLayout {
+    pub toggle: RectF,
+    pub dock_menu: RectF,
+}
+
+impl ThumbnailControlsLayout {
+    pub fn compute(status_bar: RectF) -> Self {
+        const BUTTON: f32 = 36.0;
+        const DOCK_MENU: f32 = 48.0;
+        let y = status_bar.y + (status_bar.height - BUTTON).max(0.0) * 0.5;
+        Self {
+            toggle: RectF::new(status_bar.x + 12.0, y, BUTTON, BUTTON),
+            dock_menu: RectF::new(status_bar.x + 52.0, y, DOCK_MENU, BUTTON),
+        }
+    }
+
+    pub fn hit_test(self, x: f32, y: f32) -> Option<ThumbnailControl> {
+        if self.toggle.contains(x, y) {
+            Some(ThumbnailControl::Toggle)
+        } else if self.dock_menu.contains(x, y) {
+            Some(ThumbnailControl::DockMenu)
+        } else {
+            None
+        }
+    }
+}
+
 impl StatusControlsLayout {
     pub fn compute(status_bar: RectF) -> Self {
         const BUTTON: f32 = 36.0;
@@ -125,5 +159,17 @@ mod tests {
         assert_eq!(layout.zoom_menu.y, 706.0);
         assert_eq!(layout.actual_size.height, 36.0);
         assert_eq!(layout.actual_size.y, 704.0);
+    }
+
+    #[test]
+    fn thumbnail_controls_are_pinned_to_the_left() {
+        let bar = RectF::new(0.0, 700.0, 1280.0, 44.0);
+        let layout = ThumbnailControlsLayout::compute(bar);
+        assert_eq!(layout.toggle, RectF::new(12.0, 704.0, 36.0, 36.0));
+        assert_eq!(layout.dock_menu, RectF::new(52.0, 704.0, 48.0, 36.0));
+        assert_eq!(
+            layout.hit_test(70.0, 720.0),
+            Some(ThumbnailControl::DockMenu)
+        );
     }
 }

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use purepic::ui::layout::ThumbnailDock;
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
@@ -17,6 +18,21 @@ pub struct SavedWindowState {
     pub width: u32,
     pub height: u32,
     pub maximized: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ThumbnailPreferences {
+    pub visible: bool,
+    pub dock: ThumbnailDock,
+}
+
+impl Default for ThumbnailPreferences {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            dock: ThumbnailDock::Bottom,
+        }
+    }
 }
 
 struct OwnedKey(HKEY);
@@ -41,6 +57,22 @@ pub fn save_window_state(state: SavedWindowState) -> Result<()> {
     set_dword(&key, "WindowWidth", state.width)?;
     set_dword(&key, "WindowHeight", state.height)?;
     set_dword(&key, "WindowMaximized", u32::from(state.maximized))
+}
+
+pub fn load_thumbnail_preferences() -> ThumbnailPreferences {
+    let Ok(key) = open_key(SETTINGS_KEY, KEY_READ) else {
+        return ThumbnailPreferences::default();
+    };
+    ThumbnailPreferences {
+        visible: query_dword(&key, "ThumbnailVisible").unwrap_or(0) != 0,
+        dock: dword_to_dock(query_dword(&key, "ThumbnailDock").unwrap_or(1)),
+    }
+}
+
+pub fn save_thumbnail_preferences(preferences: ThumbnailPreferences) -> Result<()> {
+    let key = create_key(SETTINGS_KEY)?;
+    set_dword(&key, "ThumbnailVisible", u32::from(preferences.visible))?;
+    set_dword(&key, "ThumbnailDock", dock_to_dword(preferences.dock))
 }
 
 pub fn is_context_menu_registered() -> bool {
@@ -173,6 +205,24 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 
+fn dock_to_dword(dock: ThumbnailDock) -> u32 {
+    match dock {
+        ThumbnailDock::Top => 0,
+        ThumbnailDock::Bottom => 1,
+        ThumbnailDock::Left => 2,
+        ThumbnailDock::Right => 3,
+    }
+}
+
+fn dword_to_dock(value: u32) -> ThumbnailDock {
+    match value {
+        0 => ThumbnailDock::Top,
+        2 => ThumbnailDock::Left,
+        3 => ThumbnailDock::Right,
+        _ => ThumbnailDock::Bottom,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +233,18 @@ mod tests {
             context_menu_command(Path::new(r"C:\Program Files\PurePic\PurePic.exe")),
             r#""C:\Program Files\PurePic\PurePic.exe" "%1""#
         );
+    }
+
+    #[test]
+    fn thumbnail_dock_values_round_trip() {
+        for dock in [
+            ThumbnailDock::Top,
+            ThumbnailDock::Bottom,
+            ThumbnailDock::Left,
+            ThumbnailDock::Right,
+        ] {
+            assert_eq!(dword_to_dock(dock_to_dword(dock)), dock);
+        }
+        assert_eq!(dword_to_dock(99), ThumbnailDock::Bottom);
     }
 }

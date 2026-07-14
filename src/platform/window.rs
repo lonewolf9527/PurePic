@@ -1,10 +1,13 @@
 use std::mem::size_of;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::image::{DecodedImage, create_demo_image, decode_preview};
 use crate::platform::chrome::{apply_dwm_attributes, non_client_hit_test};
-use crate::platform::registry::{self, SavedWindowState};
+use crate::platform::registry::{self, SavedWindowState, ThumbnailPreferences};
+use crate::platform::thumbnails::{
+    DirectoryScanResult, ThumbnailLoader, ThumbnailTask, spawn_directory_scan,
+};
 use crate::render::{PointerAction, Renderer};
 use purepic::ui::chrome::CaptionButton;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -29,9 +32,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor,
     SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
     WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCALCSIZE,
-    WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SETCURSOR,
-    WM_SIZE, WM_SYSCOMMAND, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCCALCSIZE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT,
+    WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
@@ -41,14 +44,28 @@ const MINIMUM_WIDTH: i32 = 890;
 const MINIMUM_HEIGHT: i32 = 890;
 const DEFAULT_DEMO_FILE: &str = "PixPin_2026-01-10_23-22-10.jpg";
 const WM_APP_IMAGE_READY: u32 = WM_APP + 1;
+const WM_APP_DIRECTORY_READY: u32 = WM_APP + 2;
+const WM_APP_THUMBNAIL_READY: u32 = WM_APP + 3;
 
-type ImageLoadResult = std::result::Result<DecodedImage, String>;
+struct ImageLoadResult {
+    generation: u64,
+    path: PathBuf,
+    decoded: std::result::Result<DecodedImage, String>,
+}
 
 struct WindowState {
     renderer: Renderer,
     image_receiver: Receiver<ImageLoadResult>,
+    image_sender: Sender<ImageLoadResult>,
+    image_generation: u64,
+    directory_receiver: Receiver<DirectoryScanResult>,
+    directory_sender: Sender<DirectoryScanResult>,
+    directory_generation: u64,
+    directory_scan_started: bool,
+    thumbnail_loader: ThumbnailLoader,
     requested_path: Option<PathBuf>,
     slider_dragging: bool,
+    thumbnail_scroll_dragging: bool,
     image_dragging: bool,
     context_menu_registered: bool,
     fullscreen: bool,
@@ -71,8 +88,13 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     let module = unsafe { GetModuleHandleW(None)? };
     let instance = HINSTANCE(module.0);
     let class_name = w!("PurePic.MainWindow");
-    let app_icon =
-        unsafe { LoadIconW(Some(instance), PCWSTR(1_usize as *const u16)) }.unwrap_or_default();
+    let app_icon = unsafe {
+        LoadIconW(
+            Some(instance),
+            PCWSTR(std::ptr::with_exposed_provenance(1_usize)),
+        )
+    }
+    .unwrap_or_default();
 
     let window_class = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -122,12 +144,16 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     let mut client = RECT::default();
     unsafe { GetClientRect(hwnd, &mut client)? };
     let (image_sender, image_receiver) = channel();
+    let (directory_sender, directory_receiver) = channel();
+    let thumbnail_loader = ThumbnailLoader::new(hwnd, WM_APP_THUMBNAIL_READY);
     let mut renderer = Renderer::new(
         hwnd,
         unsafe { GetDpiForWindow(hwnd) },
         (client.right - client.left).max(0) as u32,
         (client.bottom - client.top).max(0) as u32,
     )?;
+    let thumbnail_preferences = registry::load_thumbnail_preferences();
+    renderer.set_thumbnail_preferences(thumbnail_preferences.visible, thumbnail_preferences.dock);
     if let Some(path) = &image_path {
         renderer.set_loading(path);
     } else {
@@ -138,8 +164,16 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     let state = Box::new(WindowState {
         renderer,
         image_receiver,
+        image_sender: image_sender.clone(),
+        image_generation: 1,
+        directory_receiver,
+        directory_sender,
+        directory_generation: 0,
+        directory_scan_started: false,
+        thumbnail_loader,
         requested_path: image_path.clone(),
         slider_dragging: false,
+        thumbnail_scroll_dragging: false,
         image_dragging: false,
         context_menu_registered,
         fullscreen: false,
@@ -156,6 +190,7 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
             (client.right - client.left).max(1) as u32,
             (client.bottom - client.top).max(1) as u32,
             image_sender,
+            1,
         );
     }
 
@@ -236,6 +271,10 @@ unsafe extern "system" fn window_proc(
                         state.slider_dragging = true;
                         unsafe { SetCapture(hwnd) };
                     }
+                    PointerAction::BeginThumbnailScroll => {
+                        state.thumbnail_scroll_dragging = true;
+                        unsafe { SetCapture(hwnd) };
+                    }
                     PointerAction::BeginPan => {
                         state.image_dragging = true;
                         unsafe { SetCapture(hwnd) };
@@ -250,8 +289,15 @@ unsafe extern "system" fn window_proc(
                             state.renderer.set_context_menu_registered(registered);
                         }
                     }
+                    PointerAction::OpenThumbnail(index) => {
+                        if let Some(path) = state.renderer.thumbnail_path(index) {
+                            state.renderer.select_thumbnail(index);
+                            request_image(hwnd, state, path);
+                        }
+                    }
                     PointerAction::None => {}
                 }
+                queue_thumbnail_requests(state);
                 let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             }
             if let Some(fullscreen) = fullscreen_request {
@@ -268,6 +314,12 @@ unsafe extern "system" fn window_proc(
                     state
                         .renderer
                         .pointer_move_slider(signed_low_word(lparam.0));
+                } else if state.thumbnail_scroll_dragging {
+                    state.renderer.pointer_move_thumbnail_scroll(
+                        signed_low_word(lparam.0),
+                        signed_high_word(lparam.0),
+                    );
+                    queue_thumbnail_requests(state);
                 } else if state.image_dragging {
                     state
                         .renderer
@@ -286,6 +338,26 @@ unsafe extern "system" fn window_proc(
             let _ = unsafe { TrackMouseEvent(&mut tracking) };
             LRESULT(0)
         }
+        WM_MOUSEWHEEL => {
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                let mut point = POINT {
+                    x: signed_low_word(lparam.0),
+                    y: signed_high_word(lparam.0),
+                };
+                if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool()
+                    && state.renderer.scroll_thumbnails(
+                        point.x,
+                        point.y,
+                        signed_high_word(wparam.0 as isize) as i16,
+                    )
+                {
+                    queue_thumbnail_requests(state);
+                    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                    return LRESULT(0);
+                }
+            }
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
         WM_MOUSELEAVE => {
             if let Some(state) = unsafe { state_mut(hwnd) }
                 && state.renderer.clear_pointer_hot()
@@ -296,10 +368,14 @@ unsafe extern "system" fn window_proc(
         }
         WM_LBUTTONUP => {
             if let Some(state) = unsafe { state_mut(hwnd) }
-                && (state.slider_dragging || state.image_dragging)
+                && (state.slider_dragging
+                    || state.thumbnail_scroll_dragging
+                    || state.image_dragging)
             {
                 state.slider_dragging = false;
+                state.thumbnail_scroll_dragging = false;
                 state.image_dragging = false;
+                state.renderer.end_thumbnail_scroll();
                 state.renderer.end_pan();
                 let _ = unsafe { ReleaseCapture() };
             }
@@ -385,18 +461,31 @@ unsafe extern "system" fn window_proc(
         WM_APP_IMAGE_READY => {
             if let Some(state) = unsafe { state_mut(hwnd) } {
                 while let Ok(result) = state.image_receiver.try_recv() {
-                    match result {
+                    if result.generation != state.image_generation {
+                        continue;
+                    }
+                    state.requested_path = Some(result.path.clone());
+                    match result.decoded {
                         Ok(image) => {
-                            if let Err(error) = state.renderer.set_image(image)
-                                && let Some(path) = &state.requested_path
-                            {
-                                state.renderer.set_image_error(path, &error.to_string());
+                            if let Err(error) = state.renderer.set_image(image) {
+                                state
+                                    .renderer
+                                    .set_image_error(&result.path, &error.to_string());
+                            } else if !state.directory_scan_started {
+                                state.directory_generation =
+                                    state.directory_generation.wrapping_add(1);
+                                state.directory_scan_started = true;
+                                spawn_directory_scan(
+                                    hwnd,
+                                    result.path,
+                                    state.directory_generation,
+                                    state.directory_sender.clone(),
+                                    WM_APP_DIRECTORY_READY,
+                                );
                             }
                         }
                         Err(error) => {
-                            if let Some(path) = &state.requested_path {
-                                state.renderer.set_image_error(path, &error);
-                            }
+                            state.renderer.set_image_error(&result.path, &error);
                         }
                     }
                 }
@@ -404,14 +493,69 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_APP_DIRECTORY_READY => {
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                while let Ok(result) = state.directory_receiver.try_recv() {
+                    if result.generation != state.directory_generation {
+                        continue;
+                    }
+                    if let Some(current_path) = state.requested_path.as_deref() {
+                        state
+                            .renderer
+                            .set_thumbnail_catalog(result.paths, current_path);
+                    }
+                }
+                queue_thumbnail_requests(state);
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            }
+            LRESULT(0)
+        }
+        WM_APP_THUMBNAIL_READY => {
+            if let Some(state) = unsafe { state_mut(hwnd) } {
+                while let Ok(result) = state.thumbnail_loader.results.try_recv() {
+                    if result.generation != state.directory_generation {
+                        continue;
+                    }
+                    match result.decoded {
+                        Ok(image) => {
+                            if state
+                                .renderer
+                                .set_thumbnail_image(
+                                    result.index,
+                                    &result.path,
+                                    result.target_size_px,
+                                    image,
+                                )
+                                .is_err()
+                            {
+                                state.renderer.set_thumbnail_failed(
+                                    result.index,
+                                    &result.path,
+                                    result.target_size_px,
+                                );
+                            }
+                        }
+                        Err(_) => state.renderer.set_thumbnail_failed(
+                            result.index,
+                            &result.path,
+                            result.target_size_px,
+                        ),
+                    }
+                }
+                queue_thumbnail_requests(state);
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
-            let width = (lparam.0 as u32 & 0xFFFF) as u32;
-            let height = ((lparam.0 as u32 >> 16) & 0xFFFF) as u32;
+            let width = lparam.0 as u32 & 0xFFFF;
+            let height = (lparam.0 as u32 >> 16) & 0xFFFF;
             if let Some(state) = unsafe { state_mut(hwnd) } {
                 state
                     .renderer
                     .set_maximized(unsafe { IsZoomed(hwnd) }.as_bool());
                 let _ = state.renderer.resize(width, height);
+                queue_thumbnail_requests(state);
             }
             LRESULT(0)
         }
@@ -430,6 +574,7 @@ unsafe extern "system" fn window_proc(
             };
             if let Some(state) = unsafe { state_mut(hwnd) } {
                 state.renderer.set_dpi(unsafe { GetDpiForWindow(hwnd) });
+                queue_thumbnail_requests(state);
                 let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             }
             LRESULT(0)
@@ -439,6 +584,9 @@ unsafe extern "system" fn window_proc(
                 && let Some(saved) = saved_window_state(hwnd, state)
             {
                 let _ = registry::save_window_state(saved);
+                let (visible, dock) = state.renderer.thumbnail_preferences();
+                let _ =
+                    registry::save_thumbnail_preferences(ThumbnailPreferences { visible, dock });
             }
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
@@ -548,15 +696,57 @@ fn spawn_image_decode(
     target_width: u32,
     target_height: u32,
     sender: std::sync::mpsc::Sender<ImageLoadResult>,
+    generation: u64,
 ) {
     let raw_hwnd = hwnd.0 as usize;
     std::thread::spawn(move || {
-        let result =
+        let decoded =
             decode_preview(&path, target_width, target_height).map_err(|error| error.to_string());
-        let _ = sender.send(result);
+        let _ = sender.send(ImageLoadResult {
+            generation,
+            path,
+            decoded,
+        });
         let hwnd = HWND(raw_hwnd as *mut _);
         let _ = unsafe { PostMessageW(Some(hwnd), WM_APP_IMAGE_READY, WPARAM(0), LPARAM(0)) };
     });
+}
+
+fn request_image(hwnd: HWND, state: &mut WindowState, path: PathBuf) {
+    let mut client = RECT::default();
+    if unsafe { GetClientRect(hwnd, &mut client) }.is_err() {
+        return;
+    }
+    state.image_generation = state.image_generation.wrapping_add(1);
+    state.requested_path = Some(path.clone());
+    state.renderer.set_loading(&path);
+    spawn_image_decode(
+        hwnd,
+        path,
+        (client.right - client.left).max(1) as u32,
+        (client.bottom - client.top).max(1) as u32,
+        state.image_sender.clone(),
+        state.image_generation,
+    );
+}
+
+fn queue_thumbnail_requests(state: &mut WindowState) {
+    let requests = state.renderer.thumbnail_requests();
+    let tasks: Vec<_> = requests
+        .iter()
+        .map(|request| ThumbnailTask {
+            generation: state.directory_generation,
+            index: request.index,
+            path: request.path.clone(),
+            target_size_px: request.target_size_px,
+        })
+        .collect();
+    state.thumbnail_loader.replace_pending(tasks);
+    for request in requests {
+        state
+            .renderer
+            .mark_thumbnail_queued(request.index, &request.path);
+    }
 }
 
 fn default_demo_path() -> Option<PathBuf> {
