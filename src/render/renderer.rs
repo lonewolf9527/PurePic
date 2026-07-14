@@ -97,6 +97,7 @@ pub struct Renderer {
     zoom_menu_open: bool,
     fullscreen: bool,
     status_hot: Option<StatusControl>,
+    zoom_menu_hot: Option<usize>,
     pan_x: f32,
     pan_y: f32,
     pan_last_position: Option<(f32, f32)>,
@@ -217,6 +218,7 @@ impl Renderer {
             zoom_menu_open: false,
             fullscreen: false,
             status_hot: None,
+            zoom_menu_hot: None,
             pan_x: 0.0,
             pan_y: 0.0,
             pan_last_position: None,
@@ -351,31 +353,43 @@ impl Renderer {
         self.fullscreen = fullscreen;
         self.zoom_menu_open = false;
         self.status_hot = None;
+        self.zoom_menu_hot = None;
     }
 
     pub fn close_zoom_menu(&mut self) -> bool {
+        self.zoom_menu_hot = None;
         std::mem::take(&mut self.zoom_menu_open)
     }
 
-    pub fn set_status_hot(&mut self, x_px: i32, y_px: i32) -> bool {
+    pub fn set_pointer_hot(&mut self, x_px: i32, y_px: i32) -> bool {
+        let (x, y) = self.point_to_dip(x_px, y_px);
+        let layout = self.current_layout();
         let status_hot = if self.fullscreen {
             None
         } else {
-            let (x, y) = self.point_to_dip(x_px, y_px);
-            let layout = self.current_layout();
             StatusControlsLayout::compute(layout.status_bar)
                 .hit_test(x, y)
                 .filter(|control| control.tooltip().is_some())
         };
-        if self.status_hot == status_hot {
+        let zoom_menu_hot = if self.zoom_menu_open && !self.fullscreen {
+            let controls = StatusControlsLayout::compute(layout.status_bar);
+            zoom_choice_index_at(self.zoom_menu_rect(controls.zoom_menu), x, y)
+        } else {
+            None
+        };
+        if self.status_hot == status_hot && self.zoom_menu_hot == zoom_menu_hot {
             return false;
         }
         self.status_hot = status_hot;
+        self.zoom_menu_hot = zoom_menu_hot;
         true
     }
 
-    pub fn clear_status_hot(&mut self) -> bool {
-        self.status_hot.take().is_some()
+    pub fn clear_pointer_hot(&mut self) -> bool {
+        let changed = self.status_hot.is_some() || self.zoom_menu_hot.is_some();
+        self.status_hot = None;
+        self.zoom_menu_hot = None;
+        changed
     }
 
     pub fn pointer_down(&mut self, x_px: i32, y_px: i32) -> PointerAction {
@@ -390,9 +404,11 @@ impl Renderer {
             if let Some(choice) = zoom_choice_at(self.zoom_menu_rect(controls.zoom_menu), x, y) {
                 self.apply_zoom_choice(choice);
                 self.zoom_menu_open = false;
+                self.zoom_menu_hot = None;
                 return PointerAction::None;
             }
             self.zoom_menu_open = false;
+            self.zoom_menu_hot = None;
             return PointerAction::None;
         }
 
@@ -401,7 +417,10 @@ impl Renderer {
                 self.fit_mode = false;
                 self.zoom = 1.0;
             }
-            Some(StatusControl::ZoomMenu) => self.zoom_menu_open = true,
+            Some(StatusControl::ZoomMenu) => {
+                self.zoom_menu_open = true;
+                self.zoom_menu_hot = None;
+            }
             Some(StatusControl::ZoomOut) => {
                 self.zoom = step_zoom(self.current_zoom(layout.canvas) as f64, -1) as f32;
                 self.fit_mode = false;
@@ -675,20 +694,39 @@ impl Renderer {
 
             let track = RectF::new(
                 controls.slider.x + 10.0,
-                controls.slider.y + 17.0,
+                controls.slider.y + 16.0,
                 controls.slider.width - 20.0,
-                2.0,
+                4.0,
             );
             self.context
-                .FillRectangle(&to_d2d_rect(track), &self.muted_text_brush);
+                .FillRoundedRectangle(&to_d2d_rounded_rect(track, 2.0), &self.muted_text_brush);
             let position = zoom_to_slider(self.current_zoom(canvas) as f64) as f32;
             let filled = RectF::new(track.x, track.y, track.width * position, track.height);
-            self.context
-                .FillRectangle(&to_d2d_rect(filled), &self.accent_brush);
             let knob_x = track.x + track.width * position;
-            let knob = RectF::new(knob_x - 4.0, controls.slider.y + 9.0, 8.0, 18.0);
-            self.context
-                .FillRectangle(&to_d2d_rect(knob), &self.primary_text_brush);
+            if filled.width > 0.0 {
+                self.context
+                    .FillRoundedRectangle(&to_d2d_rounded_rect(filled, 2.0), &self.accent_brush);
+            }
+            let center = Vector2 {
+                X: knob_x,
+                Y: controls.slider.y + controls.slider.height * 0.5,
+            };
+            self.context.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: center,
+                    radiusX: 10.0,
+                    radiusY: 10.0,
+                },
+                &self.caption_hover_brush,
+            );
+            self.context.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: center,
+                    radiusX: 6.0,
+                    radiusY: 6.0,
+                },
+                &self.accent_brush,
+            );
         }
     }
 
@@ -701,11 +739,12 @@ impl Renderer {
         let current = self.current_zoom(canvas);
         for (index, choice) in ZOOM_CHOICES.iter().copied().enumerate() {
             let row = RectF::new(menu.x, menu.y + index as f32 * 30.0, menu.width, 30.0);
+            let hovered = self.zoom_menu_hot == Some(index);
             let selected = match choice {
                 ZoomChoice::Fit => self.fit_mode,
                 ZoomChoice::Percent(value) => !self.fit_mode && (current - value).abs() < 0.001,
             };
-            if selected {
+            if selected || hovered {
                 let selected_row = RectF::new(row.x + 4.0, row.y + 2.0, row.width - 8.0, 26.0);
                 unsafe {
                     self.context.FillRoundedRectangle(
@@ -727,6 +766,9 @@ impl Renderer {
     }
 
     unsafe fn draw_status_tooltip(&self, controls: StatusControlsLayout, canvas: RectF) {
+        if self.zoom_menu_open {
+            return;
+        }
         let Some(control) = self.status_hot else {
             return;
         };
@@ -894,11 +936,15 @@ fn zoom_choice_label(choice: ZoomChoice) -> &'static str {
 }
 
 fn zoom_choice_at(menu: RectF, x: f32, y: f32) -> Option<ZoomChoice> {
+    zoom_choice_index_at(menu, x, y).and_then(|index| ZOOM_CHOICES.get(index).copied())
+}
+
+fn zoom_choice_index_at(menu: RectF, x: f32, y: f32) -> Option<usize> {
     if !menu.contains(x, y) {
         return None;
     }
     let index = ((y - menu.y) / 30.0).floor() as usize;
-    ZOOM_CHOICES.get(index).copied()
+    (index < ZOOM_CHOICES.len()).then_some(index)
 }
 
 fn inset(rect: RectF, amount: f32) -> RectF {
@@ -1156,5 +1202,18 @@ mod tests {
     #[test]
     fn images_that_fit_do_not_pan_on_that_axis() {
         assert_eq!(constrain_pan_axis(50.0, 600.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn zoom_menu_hover_maps_each_row_and_excludes_edges() {
+        let menu = RectF::new(100.0, 50.0, 128.0, ZOOM_CHOICES.len() as f32 * 30.0);
+        assert_eq!(zoom_choice_index_at(menu, 110.0, 50.0), Some(0));
+        assert_eq!(zoom_choice_index_at(menu, 110.0, 139.9), Some(2));
+        assert_eq!(
+            zoom_choice_index_at(menu, 110.0, menu.bottom() - 0.1),
+            Some(ZOOM_CHOICES.len() - 1)
+        );
+        assert_eq!(zoom_choice_index_at(menu, 110.0, menu.bottom()), None);
+        assert_eq!(zoom_choice_index_at(menu, menu.right(), 60.0), None);
     }
 }

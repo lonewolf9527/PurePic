@@ -33,8 +33,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
-const INITIAL_WIDTH: i32 = 1280;
-const INITIAL_HEIGHT: i32 = 800;
+const INITIAL_WIDTH: i32 = 1920;
+const INITIAL_HEIGHT: i32 = 1080;
+const DEFAULT_DEMO_FILE: &str = "PixPin_2026-01-10_23-22-10.jpg";
 const WM_APP_IMAGE_READY: u32 = WM_APP + 1;
 
 type ImageLoadResult = std::result::Result<DecodedImage, String>;
@@ -54,6 +55,7 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     // if the executable is launched without its embedded manifest.
     let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
 
+    let image_path = image_path.or_else(default_demo_path);
     let module = unsafe { GetModuleHandleW(None)? };
     let instance = HINSTANCE(module.0);
     let class_name = w!("PurePic.MainWindow");
@@ -213,9 +215,9 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSEMOVE => {
             if let Some(state) = unsafe { state_mut(hwnd) } {
-                let status_changed = state
+                let pointer_hot_changed = state
                     .renderer
-                    .set_status_hot(signed_low_word(lparam.0), signed_high_word(lparam.0));
+                    .set_pointer_hot(signed_low_word(lparam.0), signed_high_word(lparam.0));
                 if state.slider_dragging {
                     state
                         .renderer
@@ -224,7 +226,7 @@ unsafe extern "system" fn window_proc(
                     state
                         .renderer
                         .pointer_move_pan(signed_low_word(lparam.0), signed_high_word(lparam.0));
-                } else if !status_changed {
+                } else if !pointer_hot_changed {
                     return LRESULT(0);
                 }
                 let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
@@ -240,7 +242,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSELEAVE => {
             if let Some(state) = unsafe { state_mut(hwnd) }
-                && state.renderer.clear_status_hot()
+                && state.renderer.clear_pointer_hot()
             {
                 let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             }
@@ -504,4 +506,23 @@ fn spawn_image_decode(
         let hwnd = HWND(raw_hwnd as *mut _);
         let _ = unsafe { PostMessageW(Some(hwnd), WM_APP_IMAGE_READY, WPARAM(0), LPARAM(0)) };
     });
+}
+
+fn default_demo_path() -> Option<PathBuf> {
+    let mut candidates = Vec::with_capacity(2);
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(directory) = executable.parent()
+    {
+        candidates.push(directory.join("pics").join(DEFAULT_DEMO_FILE));
+    }
+    if let Ok(directory) = std::env::current_dir() {
+        candidates.push(
+            directory
+                .join("target")
+                .join("release")
+                .join("pics")
+                .join(DEFAULT_DEMO_FILE),
+        );
+    }
+    candidates.into_iter().find(|path| path.is_file())
 }
