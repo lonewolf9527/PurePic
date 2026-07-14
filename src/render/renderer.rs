@@ -706,9 +706,12 @@ impl Renderer {
     unsafe fn draw_title_action(&self, title_bar: RectF) {
         let button = title_action_button_rect(title_bar);
         if self.title_action_hot {
+            let hover = centered_square(button, 36.0);
             unsafe {
-                self.context
-                    .FillRectangle(&to_d2d_rect(button), &self.caption_hover_brush)
+                self.context.FillRoundedRectangle(
+                    &to_d2d_rounded_rect(hover, 6.0),
+                    &self.caption_hover_brush,
+                )
             };
         }
         let separator = RectF::new(
