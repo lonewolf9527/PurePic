@@ -82,6 +82,7 @@ const NAVIGATION_PROXIMITY_Y_DIP: f32 = 56.0;
 const NAVIGATION_SHOW_DELAY: Duration = Duration::from_millis(120);
 const NAVIGATION_FADE_IN_SECONDS: f32 = 0.14;
 const NAVIGATION_FADE_OUT_SECONDS: f32 = 0.32;
+const PAN_OVERFLOW_EPSILON_DIP: f32 = 0.5;
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     color_alpha(r, g, b, 1.0)
@@ -833,6 +834,9 @@ impl Renderer {
     }
 
     pub fn shows_pan_cursor(&self, x_px: i32, y_px: i32) -> bool {
+        if self.fit_mode {
+            return false;
+        }
         let (x, y) = self.point_to_dip(x_px, y_px);
         let layout = self.current_layout();
         if layout
@@ -1949,7 +1953,7 @@ impl Renderer {
     }
 
     fn begin_pan(&mut self, x: f32, y: f32, canvas: RectF) -> PointerAction {
-        if !canvas.contains(x, y) {
+        if self.fit_mode || !canvas.contains(x, y) {
             return PointerAction::None;
         }
         let Some((width, height)) = self.image_size(canvas) else {
@@ -2423,7 +2427,7 @@ fn transform_icon_point(
 }
 
 fn constrain_pan_axis(pan: f32, image_extent: f32, canvas_extent: f32) -> f32 {
-    if image_extent <= canvas_extent {
+    if image_extent <= canvas_extent + PAN_OVERFLOW_EPSILON_DIP {
         return 0.0;
     }
     let limit = (image_extent - canvas_extent) * 0.5;
@@ -2431,7 +2435,8 @@ fn constrain_pan_axis(pan: f32, image_extent: f32, canvas_extent: f32) -> f32 {
 }
 
 fn image_exceeds_canvas(canvas: RectF, width: f32, height: f32) -> bool {
-    width > canvas.width || height > canvas.height
+    width > canvas.width + PAN_OVERFLOW_EPSILON_DIP
+        || height > canvas.height + PAN_OVERFLOW_EPSILON_DIP
 }
 
 fn navigation_opacity_after(current: f32, elapsed_seconds: f32, showing: bool) -> f32 {
@@ -2574,6 +2579,7 @@ mod tests {
     #[test]
     fn images_that_fit_do_not_pan_on_that_axis() {
         assert_eq!(constrain_pan_axis(50.0, 600.0, 800.0), 0.0);
+        assert_eq!(constrain_pan_axis(50.0, 800.25, 800.0), 0.0);
     }
 
     #[test]
@@ -2582,6 +2588,7 @@ mod tests {
         assert!(image_exceeds_canvas(canvas, 801.0, 500.0));
         assert!(image_exceeds_canvas(canvas, 700.0, 601.0));
         assert!(!image_exceeds_canvas(canvas, 800.0, 600.0));
+        assert!(!image_exceeds_canvas(canvas, 800.25, 600.25));
     }
 
     #[test]
