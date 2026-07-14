@@ -1636,7 +1636,7 @@ impl Renderer {
                 &self.primary_text_brush,
             );
             let separator = RectF::new(
-                controls.dock_menu.right() + 6.0,
+                controls.dock_menu.right() + 12.0,
                 controls.dock_menu.y + 4.0,
                 1.0,
                 controls.dock_menu.height - 8.0,
