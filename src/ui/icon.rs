@@ -176,11 +176,22 @@ fn parse_path(path: &str) -> io::Result<Vec<IconSegment>> {
                 last_cubic_control = Some(control_two);
             }
             'A' | 'a' => {
-                for _ in 0..5 {
-                    read_number(&tokens, &mut index)?;
-                }
+                let radius_x = read_number(&tokens, &mut index)?.abs();
+                let radius_y = read_number(&tokens, &mut index)?.abs();
+                let rotation = read_number(&tokens, &mut index)?;
+                let large_arc = read_flag(&tokens, &mut index)?;
+                let sweep = read_flag(&tokens, &mut index)?;
                 let next = resolve_point(current, read_point(&tokens, &mut index)?, relative);
-                append_line(&mut segments, &mut current, next);
+                append_arc(
+                    &mut segments,
+                    &mut current,
+                    radius_x,
+                    radius_y,
+                    rotation,
+                    large_arc,
+                    sweep,
+                    next,
+                );
                 last_cubic_control = None;
             }
             'Z' | 'z' => {
@@ -227,7 +238,7 @@ fn append_cubic(
     control_two: IconPoint,
     end: IconPoint,
 ) {
-    const STEPS: usize = 8;
+    const STEPS: usize = 16;
     let start = *current;
     let mut previous = start;
     for step in 1..=STEPS {
@@ -242,6 +253,111 @@ fn append_cubic(
                 + 3.0 * inverse.powi(2) * t * control_one.y
                 + 3.0 * inverse * t.powi(2) * control_two.y
                 + t.powi(3) * end.y,
+        };
+        segments.push(IconSegment {
+            start: previous,
+            end: point,
+        });
+        previous = point;
+    }
+    *current = end;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_arc(
+    segments: &mut Vec<IconSegment>,
+    current: &mut IconPoint,
+    mut radius_x: f32,
+    mut radius_y: f32,
+    rotation_degrees: f32,
+    large_arc: bool,
+    sweep: bool,
+    end: IconPoint,
+) {
+    use std::f32::consts::{PI, TAU};
+
+    let start = *current;
+    if radius_x <= f32::EPSILON
+        || radius_y <= f32::EPSILON
+        || ((start.x - end.x).abs() <= f32::EPSILON && (start.y - end.y).abs() <= f32::EPSILON)
+    {
+        if start != end {
+            append_line(segments, current, end);
+        }
+        return;
+    }
+
+    let rotation = rotation_degrees.to_radians();
+    let (sin_rotation, cos_rotation) = rotation.sin_cos();
+    let midpoint_x = (start.x - end.x) * 0.5;
+    let midpoint_y = (start.y - end.y) * 0.5;
+    let transformed_x = cos_rotation * midpoint_x + sin_rotation * midpoint_y;
+    let transformed_y = -sin_rotation * midpoint_x + cos_rotation * midpoint_y;
+
+    let radii_scale =
+        transformed_x.powi(2) / radius_x.powi(2) + transformed_y.powi(2) / radius_y.powi(2);
+    if radii_scale > 1.0 {
+        let scale = radii_scale.sqrt();
+        radius_x *= scale;
+        radius_y *= scale;
+    }
+
+    let radius_x_squared = radius_x.powi(2);
+    let radius_y_squared = radius_y.powi(2);
+    let transformed_x_squared = transformed_x.powi(2);
+    let transformed_y_squared = transformed_y.powi(2);
+    let denominator =
+        radius_x_squared * transformed_y_squared + radius_y_squared * transformed_x_squared;
+    let numerator = (radius_x_squared * radius_y_squared
+        - radius_x_squared * transformed_y_squared
+        - radius_y_squared * transformed_x_squared)
+        .max(0.0);
+    let direction = if large_arc == sweep { -1.0 } else { 1.0 };
+    let center_scale = if denominator <= f32::EPSILON {
+        0.0
+    } else {
+        direction * (numerator / denominator).sqrt()
+    };
+    let transformed_center_x = center_scale * radius_x * transformed_y / radius_y;
+    let transformed_center_y = -center_scale * radius_y * transformed_x / radius_x;
+    let center_x = cos_rotation * transformed_center_x - sin_rotation * transformed_center_y
+        + (start.x + end.x) * 0.5;
+    let center_y = sin_rotation * transformed_center_x
+        + cos_rotation * transformed_center_y
+        + (start.y + end.y) * 0.5;
+
+    let start_vector = (
+        (transformed_x - transformed_center_x) / radius_x,
+        (transformed_y - transformed_center_y) / radius_y,
+    );
+    let end_vector = (
+        (-transformed_x - transformed_center_x) / radius_x,
+        (-transformed_y - transformed_center_y) / radius_y,
+    );
+    let start_angle = start_vector.1.atan2(start_vector.0);
+    let mut sweep_angle = (start_vector.0 * end_vector.1 - start_vector.1 * end_vector.0)
+        .atan2(start_vector.0 * end_vector.0 + start_vector.1 * end_vector.1);
+    if sweep && sweep_angle < 0.0 {
+        sweep_angle += TAU;
+    } else if !sweep && sweep_angle > 0.0 {
+        sweep_angle -= TAU;
+    }
+
+    let steps = (sweep_angle.abs() / (PI / 16.0)).ceil().max(1.0) as usize;
+    let mut previous = start;
+    for step in 1..=steps {
+        let angle = start_angle + sweep_angle * step as f32 / steps as f32;
+        let (sin_angle, cos_angle) = angle.sin_cos();
+        let point = if step == steps {
+            end
+        } else {
+            IconPoint {
+                x: center_x + cos_rotation * radius_x * cos_angle
+                    - sin_rotation * radius_y * sin_angle,
+                y: center_y
+                    + sin_rotation * radius_x * cos_angle
+                    + cos_rotation * radius_y * sin_angle,
+            }
         };
         segments.push(IconSegment {
             start: previous,
@@ -300,6 +416,14 @@ fn read_number(tokens: &[Token], index: &mut usize) -> io::Result<f32> {
     Ok(value)
 }
 
+fn read_flag(tokens: &[Token], index: &mut usize) -> io::Result<bool> {
+    match read_number(tokens, index)? {
+        0.0 => Ok(false),
+        1.0 => Ok(true),
+        _ => invalid_path("SVG arc flags must be 0 or 1"),
+    }
+}
+
 fn invalid_path<T>(message: &str) -> io::Result<T> {
     Err(io::Error::new(io::ErrorKind::InvalidData, message))
 }
@@ -318,8 +442,16 @@ mod tests {
     #[test]
     fn parses_relative_curves_and_arcs() {
         let segments = parse_path("M 0 0 c 4 0 4 8 8 8 s 4 8 8 0 a 2 2 0 0 1 4 0 z").unwrap();
-        assert!(segments.len() > 16);
+        assert!(segments.len() > 32);
         assert_eq!(segments.last().unwrap().end, IconPoint::default());
+    }
+
+    #[test]
+    fn tessellates_svg_arcs_instead_of_replacing_them_with_chords() {
+        let segments = parse_path("M 2 12 A 10 10 0 0 1 22 12").unwrap();
+        assert!(segments.len() >= 16);
+        assert!(segments.iter().any(|segment| segment.end.y < 12.0));
+        assert_eq!(segments.last().unwrap().end, IconPoint { x: 22.0, y: 12.0 });
     }
 
     #[test]

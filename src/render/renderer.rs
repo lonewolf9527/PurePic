@@ -15,9 +15,10 @@ use windows::Win32::Graphics::Direct2D::Common::{
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
-    D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_LINEAR,
-    D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext,
-    ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    D2D1_ELLIPSE, D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1,
+    ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
+    ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
@@ -50,6 +51,7 @@ const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
 const CAPTION_HOVER: D2D1_COLOR_F = color(0x31, 0x3A, 0x3F);
 const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
 const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
+const PAN_EDGE_PADDING_DIP: f32 = 24.0;
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -803,11 +805,9 @@ impl Renderer {
     }
 
     fn constrained_pan_for(&self, canvas: RectF, width: f32, height: f32) -> (f32, f32) {
-        let max_x = ((width - canvas.width) * 0.5).max(0.0);
-        let max_y = ((height - canvas.height) * 0.5).max(0.0);
         (
-            self.pan_x.clamp(-max_x, max_x),
-            self.pan_y.clamp(-max_y, max_y),
+            constrain_pan_axis(self.pan_x, width, canvas.width),
+            constrain_pan_axis(self.pan_y, height, canvas.height),
         )
     }
 
@@ -912,22 +912,43 @@ unsafe fn draw_icon(
     let origin_x = target.x + (target.width - icon.width * scale) * 0.5;
     let origin_y = target.y + (target.height - icon.height * scale) * 0.5;
     for segment in &icon.segments {
+        let start = Vector2 {
+            X: origin_x + segment.start.x * scale,
+            Y: origin_y + segment.start.y * scale,
+        };
+        let end = Vector2 {
+            X: origin_x + segment.end.x * scale,
+            Y: origin_y + segment.end.y * scale,
+        };
         unsafe {
-            context.DrawLine(
-                Vector2 {
-                    X: origin_x + segment.start.x * scale,
-                    Y: origin_y + segment.start.y * scale,
-                },
-                Vector2 {
-                    X: origin_x + segment.end.x * scale,
-                    Y: origin_y + segment.end.y * scale,
+            context.DrawLine(start, end, brush, stroke_width, None::<&ID2D1StrokeStyle>);
+            let radius = stroke_width * 0.5;
+            context.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: start,
+                    radiusX: radius,
+                    radiusY: radius,
                 },
                 brush,
-                stroke_width,
-                None::<&ID2D1StrokeStyle>,
+            );
+            context.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: end,
+                    radiusX: radius,
+                    radiusY: radius,
+                },
+                brush,
             );
         }
     }
+}
+
+fn constrain_pan_axis(pan: f32, image_extent: f32, canvas_extent: f32) -> f32 {
+    if image_extent <= canvas_extent {
+        return 0.0;
+    }
+    let limit = (image_extent - canvas_extent) * 0.5 + PAN_EDGE_PADDING_DIP;
+    pan.clamp(-limit, limit)
 }
 
 fn create_d3d_device() -> Result<ID3D11Device> {
@@ -1041,5 +1062,21 @@ fn format_file_size(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KIB)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_images_keep_padding_at_each_pan_limit() {
+        assert_eq!(constrain_pan_axis(1_000.0, 1200.0, 800.0), 224.0);
+        assert_eq!(constrain_pan_axis(-1_000.0, 1200.0, 800.0), -224.0);
+    }
+
+    #[test]
+    fn images_that_fit_do_not_pan_on_that_axis() {
+        assert_eq!(constrain_pan_axis(50.0, 600.0, 800.0), 0.0);
     }
 }

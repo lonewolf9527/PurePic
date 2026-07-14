@@ -1,5 +1,5 @@
 pub const DEFAULT_DPI: u32 = 96;
-pub const TITLE_BAR_HEIGHT_DIP: f32 = 40.0;
+pub const TITLE_BAR_HEIGHT_DIP: f32 = 36.0;
 pub const STATUS_BAR_HEIGHT_DIP: f32 = 44.0;
 pub const HORIZONTAL_THUMBNAIL_EXTENT_DIP: f32 = 112.0;
 pub const VERTICAL_THUMBNAIL_EXTENT_DIP: f32 = 120.0;
@@ -168,8 +168,8 @@ mod tests {
     fn hidden_thumbnail_uses_all_content_space() {
         let layout = compute_layout(LayoutInput::new(1280, 800, 96));
 
-        assert_rect(layout.title_bar, RectF::new(0.0, 0.0, 1280.0, 40.0));
-        assert_rect(layout.canvas, RectF::new(0.0, 40.0, 1280.0, 716.0));
+        assert_rect(layout.title_bar, RectF::new(0.0, 0.0, 1280.0, 36.0));
+        assert_rect(layout.canvas, RectF::new(0.0, 36.0, 1280.0, 720.0));
         assert_rect(layout.status_bar, RectF::new(0.0, 756.0, 1280.0, 44.0));
         assert_eq!(layout.thumbnail_panel, None);
     }
@@ -187,23 +187,23 @@ mod tests {
         let expected = [
             (
                 ThumbnailDock::Top,
-                RectF::new(0.0, 40.0, 1280.0, 112.0),
-                RectF::new(0.0, 152.0, 1280.0, 604.0),
+                RectF::new(0.0, 36.0, 1280.0, 112.0),
+                RectF::new(0.0, 148.0, 1280.0, 608.0),
             ),
             (
                 ThumbnailDock::Bottom,
                 RectF::new(0.0, 644.0, 1280.0, 112.0),
-                RectF::new(0.0, 40.0, 1280.0, 604.0),
+                RectF::new(0.0, 36.0, 1280.0, 608.0),
             ),
             (
                 ThumbnailDock::Left,
-                RectF::new(0.0, 40.0, 120.0, 716.0),
-                RectF::new(120.0, 40.0, 1160.0, 716.0),
+                RectF::new(0.0, 36.0, 120.0, 720.0),
+                RectF::new(120.0, 36.0, 1160.0, 720.0),
             ),
             (
                 ThumbnailDock::Right,
-                RectF::new(1160.0, 40.0, 120.0, 716.0),
-                RectF::new(0.0, 40.0, 1160.0, 716.0),
+                RectF::new(1160.0, 36.0, 120.0, 720.0),
+                RectF::new(0.0, 36.0, 1160.0, 720.0),
             ),
         ];
 
