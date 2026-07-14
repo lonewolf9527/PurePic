@@ -85,8 +85,9 @@ impl StatusControlsLayout {
         const MENU: f32 = 68.0;
         const SLIDER: f32 = 120.0;
         const GAP: f32 = 4.0;
+        const SLIDER_GAP: f32 = 0.0;
         const RIGHT_PADDING: f32 = 12.0;
-        let total = BUTTON * 4.0 + MENU + SLIDER + GAP * 5.0;
+        let total = BUTTON * 4.0 + MENU + SLIDER + GAP * 3.0 + SLIDER_GAP * 2.0;
         let y = status_bar.y + (status_bar.height - BUTTON).max(0.0) * 0.5;
         let menu_y = status_bar.y + (status_bar.height - MENU_HEIGHT).max(0.0) * 0.5;
         let mut x = (status_bar.right() - RIGHT_PADDING - total).max(status_bar.x);
@@ -96,9 +97,9 @@ impl StatusControlsLayout {
         let zoom_menu = RectF::new(x, menu_y, MENU, MENU_HEIGHT);
         x += MENU + GAP;
         let zoom_out = RectF::new(x, y, BUTTON, BUTTON);
-        x += BUTTON + GAP;
+        x += BUTTON + SLIDER_GAP;
         let slider = RectF::new(x, y, SLIDER, BUTTON);
-        x += SLIDER + GAP;
+        x += SLIDER + SLIDER_GAP;
         let zoom_in = RectF::new(x, y, BUTTON, BUTTON);
         x += BUTTON + GAP;
         let fullscreen = RectF::new(x, y, BUTTON, BUTTON);
@@ -171,6 +172,8 @@ mod tests {
         assert_eq!(layout.zoom_menu.y, 706.0);
         assert_eq!(layout.actual_size.height, 36.0);
         assert_eq!(layout.actual_size.y, 704.0);
+        assert_eq!(layout.slider.x, layout.zoom_out.right());
+        assert_eq!(layout.zoom_in.x, layout.slider.right());
     }
 
     #[test]
