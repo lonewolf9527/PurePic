@@ -2,10 +2,32 @@ use std::cmp::Ordering;
 use std::ops::Range;
 use std::path::Path;
 
-pub const THUMBNAIL_CONTENT_DIP: f32 = 88.0;
-pub const THUMBNAIL_ITEM_EXTENT_DIP: f32 = 104.0;
+use crate::ui::layout::{RectF, ThumbnailDock};
+
+pub const THUMBNAIL_CONTENT_DIP: f32 = 72.0;
+pub const THUMBNAIL_ITEM_EXTENT_DIP: f32 = 84.0;
+pub const THUMBNAIL_PANEL_PADDING_DIP: f32 = 8.0;
 pub const THUMBNAIL_CACHE_BUDGET_BYTES: usize = 32 * 1024 * 1024;
 pub const THUMBNAIL_QUEUE_CAPACITY: usize = 24;
+
+pub fn fit_thumbnail_overlay(
+    mut available: RectF,
+    dock: ThumbnailDock,
+    item_count: usize,
+) -> RectF {
+    let desired_extent =
+        item_count as f32 * THUMBNAIL_ITEM_EXTENT_DIP + THUMBNAIL_PANEL_PADDING_DIP * 2.0;
+    if dock.is_horizontal() {
+        let width = desired_extent.min(available.width);
+        available.x += (available.width - width) * 0.5;
+        available.width = width;
+    } else {
+        let height = desired_extent.min(available.height);
+        available.y += (available.height - height) * 0.5;
+        available.height = height;
+    }
+    available
+}
 
 pub fn is_supported_image(path: &Path) -> bool {
     path.extension()
@@ -171,13 +193,13 @@ mod tests {
 
     #[test]
     fn visible_range_prefetches_one_viewport_on_each_side() {
-        assert_eq!(visible_prefetch_range(100, 1_040.0, 520.0), 5..21);
+        assert_eq!(visible_prefetch_range(100, 840.0, 420.0), 5..21);
     }
 
     #[test]
     fn prioritized_indices_load_selection_and_visible_items_before_prefetch() {
         assert_eq!(
-            prioritized_thumbnail_indices(100, 1_040.0, 520.0, Some(50)),
+            prioritized_thumbnail_indices(100, 840.0, 420.0, Some(50)),
             [
                 50, 49, 51, 10, 11, 12, 13, 14, 15, 9, 8, 7, 6, 5, 16, 17, 18, 19, 20
             ]
@@ -186,9 +208,9 @@ mod tests {
 
     #[test]
     fn selected_item_can_be_centered_and_clamped() {
-        assert_eq!(centered_scroll_offset(0, 20, 520.0), 0.0);
-        assert_eq!(centered_scroll_offset(10, 20, 520.0), 832.0);
-        assert_eq!(centered_scroll_offset(19, 20, 520.0), 1560.0);
+        assert_eq!(centered_scroll_offset(0, 20, 420.0), 0.0);
+        assert_eq!(centered_scroll_offset(10, 20, 420.0), 672.0);
+        assert_eq!(centered_scroll_offset(19, 20, 420.0), 1260.0);
     }
 
     #[test]
@@ -196,5 +218,20 @@ mod tests {
         assert!(is_supported_image(Path::new("photo.JPEG")));
         assert!(is_supported_image(Path::new("image.png")));
         assert!(!is_supported_image(Path::new("notes.txt")));
+    }
+
+    #[test]
+    fn short_thumbnail_overlays_shrink_and_center_on_their_main_axis() {
+        let available = RectF::new(12.0, 56.0, 1_256.0, 92.0);
+        assert_eq!(
+            fit_thumbnail_overlay(available, ThumbnailDock::Bottom, 3),
+            RectF::new(506.0, 56.0, 268.0, 92.0)
+        );
+
+        let available = RectF::new(12.0, 56.0, 92.0, 688.0);
+        assert_eq!(
+            fit_thumbnail_overlay(available, ThumbnailDock::Left, 2),
+            RectF::new(12.0, 308.0, 92.0, 184.0)
+        );
     }
 }

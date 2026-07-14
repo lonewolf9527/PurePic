@@ -10,8 +10,9 @@ use purepic::ui::icon::Icon;
 use purepic::ui::layout::{LayoutInput, RectF, ThumbnailDock, WindowLayout, compute_layout};
 use purepic::ui::thumbnail::{
     THUMBNAIL_CACHE_BUDGET_BYTES, THUMBNAIL_CONTENT_DIP, THUMBNAIL_ITEM_EXTENT_DIP,
-    THUMBNAIL_QUEUE_CAPACITY, centered_scroll_offset, max_scroll_offset,
-    prioritized_thumbnail_indices, visible_prefetch_range,
+    THUMBNAIL_PANEL_PADDING_DIP, THUMBNAIL_QUEUE_CAPACITY, centered_scroll_offset,
+    fit_thumbnail_overlay, max_scroll_offset, prioritized_thumbnail_indices,
+    visible_prefetch_range,
 };
 use purepic::ui::zoom::{
     MAX_ZOOM, MIN_ZOOM, SizeF, fit_zoom, slider_to_zoom, step_zoom, zoom_to_slider,
@@ -57,7 +58,7 @@ const STATUS_CONTROL_BACKGROUND: D2D1_COLOR_F = color(0x34, 0x34, 0x34);
 const MENU_BACKGROUND: D2D1_COLOR_F = color(0x2E, 0x2E, 0x2E);
 const MENU_HOVER_BACKGROUND: D2D1_COLOR_F = color(0x3A, 0x3A, 0x3A);
 const MENU_SELECTED_BACKGROUND: D2D1_COLOR_F = color(0x17, 0x6F, 0x71);
-const THUMBNAIL_BACKGROUND: D2D1_COLOR_F = color(0x27, 0x27, 0x27);
+const THUMBNAIL_BACKGROUND: D2D1_COLOR_F = color_alpha(0x27, 0x27, 0x27, 0.82);
 const THUMBNAIL_PLACEHOLDER: D2D1_COLOR_F = color(0x20, 0x20, 0x20);
 const PRIMARY_TEXT: D2D1_COLOR_F = color(0xF4, 0xF6, 0xF8);
 const SECONDARY_TEXT: D2D1_COLOR_F = color(0xB4, 0xBC, 0xC2);
@@ -69,11 +70,15 @@ const APP_TITLE: &str = "PurePic 图片查看器";
 const TITLE_TEXT_LEFT_DIP: f32 = 176.0;
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
+    color_alpha(r, g, b, 1.0)
+}
+
+const fn color_alpha(r: u8, g: u8, b: u8, alpha: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
         r: r as f32 / 255.0,
         g: g as f32 / 255.0,
         b: b as f32 / 255.0,
-        a: 1.0,
+        a: alpha,
     }
 }
 
@@ -424,6 +429,7 @@ impl Renderer {
                     self.draw_dock_menu(thumbnail_controls.dock_menu);
                 }
                 self.draw_status_tooltip(controls, layout.canvas);
+                self.draw_thumbnail_tooltip(thumbnail_controls, layout.canvas);
                 self.draw_title_action_tooltip(layout.title_bar, layout.canvas);
             }
 
@@ -645,6 +651,12 @@ impl Renderer {
             .and_then(|panel| self.thumbnail_index_at(panel, x, y))
         {
             return PointerAction::OpenThumbnail(index);
+        }
+        if layout
+            .thumbnail_panel
+            .is_some_and(|panel| panel.contains(x, y))
+        {
+            return PointerAction::None;
         }
 
         match controls.hit_test(x, y) {
@@ -908,7 +920,6 @@ impl Renderer {
     pub fn select_thumbnail(&mut self, index: usize) {
         if index < self.thumbnail_items.len() {
             self.thumbnail_selected = Some(index);
-            self.center_selected_thumbnail();
         }
     }
 
@@ -1178,7 +1189,7 @@ impl Renderer {
     unsafe fn draw_thumbnails(&self, panel: RectF) {
         unsafe {
             self.context
-                .FillRectangle(&to_d2d_rect(panel), &self.thumbnail_brush);
+                .FillRoundedRectangle(&to_d2d_rounded_rect(panel, 8.0), &self.thumbnail_brush);
             self.context
                 .PushAxisAlignedClip(&to_d2d_rect(panel), D2D1_ANTIALIAS_MODE_ALIASED);
         }
@@ -1189,15 +1200,12 @@ impl Renderer {
             let cell = self.thumbnail_item_rect(panel, index);
             let selected = self.thumbnail_selected == Some(index);
             let hovered = self.thumbnail_hot == Some(index);
-            let frame = centered_square(cell, 96.0);
+            let frame = centered_square(cell, THUMBNAIL_CONTENT_DIP + 4.0);
             let content = centered_square(cell, THUMBNAIL_CONTENT_DIP);
             unsafe {
-                if selected {
-                    self.context
-                        .FillRoundedRectangle(&to_d2d_rounded_rect(frame, 7.0), &self.accent_brush);
-                } else if hovered {
+                if hovered && !selected {
                     self.context.FillRoundedRectangle(
-                        &to_d2d_rounded_rect(frame, 7.0),
+                        &to_d2d_rounded_rect(frame, 5.0),
                         &self.status_control_brush,
                     );
                 }
@@ -1255,6 +1263,16 @@ impl Renderer {
                         top_right,
                         bottom_left,
                         &self.muted_text_brush,
+                        1.5,
+                        None,
+                    );
+                }
+            }
+            if selected {
+                unsafe {
+                    self.context.DrawRoundedRectangle(
+                        &to_d2d_rounded_rect(frame, 5.0),
+                        &self.accent_brush,
                         1.5,
                         None,
                     );
@@ -1413,8 +1431,8 @@ impl Renderer {
                 },
             );
             let dock_icon_rect = RectF::new(
-                controls.dock_menu.x + 7.0,
-                controls.dock_menu.y + 8.0,
+                controls.dock_menu.x + 5.0,
+                controls.dock_menu.y + 6.0,
                 20.0,
                 20.0,
             );
@@ -1426,9 +1444,9 @@ impl Renderer {
                 &self.primary_text_brush,
             );
             let chevron = RectF::new(
-                controls.dock_menu.right() - 14.0,
-                controls.dock_menu.y + 12.0,
-                8.0,
+                controls.dock_menu.right() - 11.0,
+                controls.dock_menu.y + 10.0,
+                6.0,
                 12.0,
             );
             draw_icon(
@@ -1440,9 +1458,9 @@ impl Renderer {
             );
             let separator = RectF::new(
                 controls.dock_menu.right() + 6.0,
-                controls.dock_menu.y + 6.0,
+                controls.dock_menu.y + 4.0,
                 1.0,
-                controls.dock_menu.height - 12.0,
+                controls.dock_menu.height - 8.0,
             );
             self.context
                 .FillRectangle(&to_d2d_rect(separator), &self.muted_text_brush);
@@ -1486,8 +1504,8 @@ impl Renderer {
                 draw_text(
                     &self.context,
                     dock_label(dock),
-                    &self.status_format,
-                    RectF::new(row.x + 34.0, row.y, row.width - 38.0, row.height),
+                    &self.tooltip_format,
+                    RectF::new(row.x + 28.0, row.y, row.width - 36.0, row.height),
                     &self.primary_text_brush,
                 );
             }
@@ -1574,6 +1592,38 @@ impl Renderer {
         }
     }
 
+    unsafe fn draw_thumbnail_tooltip(&self, controls: ThumbnailControlsLayout, canvas: RectF) {
+        if self.dock_menu_open {
+            return;
+        }
+        let Some(control) = self.thumbnail_control_hot else {
+            return;
+        };
+        let (label, width) = control.tooltip();
+        let button = match control {
+            ThumbnailControl::Toggle => controls.toggle,
+            ThumbnailControl::DockMenu => controls.dock_menu,
+        };
+        let rect = RectF::new(
+            (button.x + (button.width - width) * 0.5)
+                .clamp(canvas.x + 8.0, canvas.right() - width - 8.0),
+            button.y - 40.0,
+            width,
+            32.0,
+        );
+        unsafe {
+            self.context
+                .FillRoundedRectangle(&to_d2d_rounded_rect(rect, 6.0), &self.title_brush);
+            draw_text(
+                &self.context,
+                label,
+                &self.tooltip_format,
+                rect,
+                &self.primary_text_brush,
+            );
+        }
+    }
+
     fn current_zoom(&self, canvas: RectF) -> f32 {
         if !self.fit_mode {
             return self.zoom.clamp(MIN_ZOOM as f32, MAX_ZOOM as f32);
@@ -1594,6 +1644,13 @@ impl Renderer {
         let mut layout = compute_layout(input);
         if self.fullscreen {
             layout.canvas = layout.client;
+            layout.thumbnail_panel = None;
+        } else if let Some(panel) = layout.thumbnail_panel {
+            layout.thumbnail_panel = Some(fit_thumbnail_overlay(
+                panel,
+                self.thumbnail_dock,
+                self.thumbnail_items.len(),
+            ));
         }
         layout
     }
@@ -1662,9 +1719,9 @@ impl Renderer {
 
     fn thumbnail_viewport_extent(&self, panel: RectF) -> f32 {
         if self.thumbnail_dock.is_horizontal() {
-            panel.width
+            (panel.width - THUMBNAIL_PANEL_PADDING_DIP * 2.0).max(0.0)
         } else {
-            panel.height
+            (panel.height - THUMBNAIL_PANEL_PADDING_DIP * 2.0).max(0.0)
         }
     }
 
@@ -1672,7 +1729,7 @@ impl Renderer {
         let position = index as f32 * THUMBNAIL_ITEM_EXTENT_DIP - self.thumbnail_scroll;
         if self.thumbnail_dock.is_horizontal() {
             RectF::new(
-                panel.x + position,
+                panel.x + THUMBNAIL_PANEL_PADDING_DIP + position,
                 panel.y,
                 THUMBNAIL_ITEM_EXTENT_DIP,
                 panel.height,
@@ -1680,7 +1737,7 @@ impl Renderer {
         } else {
             RectF::new(
                 panel.x,
-                panel.y + position,
+                panel.y + THUMBNAIL_PANEL_PADDING_DIP + position,
                 panel.width,
                 THUMBNAIL_ITEM_EXTENT_DIP,
             )
@@ -1691,11 +1748,16 @@ impl Renderer {
         if !panel.contains(x, y) {
             return None;
         }
-        let position = if self.thumbnail_dock.is_horizontal() {
-            x - panel.x
+        let axis_position = if self.thumbnail_dock.is_horizontal() {
+            x - panel.x - THUMBNAIL_PANEL_PADDING_DIP
         } else {
-            y - panel.y
-        } + self.thumbnail_scroll;
+            y - panel.y - THUMBNAIL_PANEL_PADDING_DIP
+        };
+        let viewport = self.thumbnail_viewport_extent(panel);
+        if axis_position < 0.0 || axis_position >= viewport {
+            return None;
+        }
+        let position = axis_position + self.thumbnail_scroll;
         let index = (position / THUMBNAIL_ITEM_EXTENT_DIP).floor().max(0.0) as usize;
         (index < self.thumbnail_items.len()).then_some(index)
     }
@@ -1867,7 +1929,7 @@ impl Renderer {
 
     fn dock_menu_rect(&self, button: RectF) -> RectF {
         let height = DOCK_CHOICES.len() as f32 * 30.0;
-        RectF::new(button.x, button.y - height - 6.0, 104.0, height)
+        RectF::new(button.x, button.y - height - 6.0, 80.0, height)
     }
 
     fn apply_zoom_choice(&mut self, choice: ZoomChoice) {

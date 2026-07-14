@@ -39,6 +39,15 @@ pub enum ThumbnailControl {
     DockMenu,
 }
 
+impl ThumbnailControl {
+    pub const fn tooltip(self) -> (&'static str, f32) {
+        match self {
+            Self::Toggle => ("显示/隐藏缩略图", 116.0),
+            Self::DockMenu => ("设置缩略图位置", 112.0),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ThumbnailControlsLayout {
     pub toggle: RectF,
@@ -48,11 +57,13 @@ pub struct ThumbnailControlsLayout {
 impl ThumbnailControlsLayout {
     pub fn compute(status_bar: RectF) -> Self {
         const BUTTON: f32 = 36.0;
-        const DOCK_MENU: f32 = 48.0;
-        let y = status_bar.y + (status_bar.height - BUTTON).max(0.0) * 0.5;
+        const MENU_HEIGHT: f32 = 32.0;
+        const DOCK_MENU: f32 = 44.0;
+        let button_y = status_bar.y + (status_bar.height - BUTTON).max(0.0) * 0.5;
+        let menu_y = status_bar.y + (status_bar.height - MENU_HEIGHT).max(0.0) * 0.5;
         Self {
-            toggle: RectF::new(status_bar.x + 12.0, y, BUTTON, BUTTON),
-            dock_menu: RectF::new(status_bar.x + 52.0, y, DOCK_MENU, BUTTON),
+            toggle: RectF::new(status_bar.x + 12.0, button_y, BUTTON, BUTTON),
+            dock_menu: RectF::new(status_bar.x + 52.0, menu_y, DOCK_MENU, MENU_HEIGHT),
         }
     }
 
@@ -166,10 +177,14 @@ mod tests {
         let bar = RectF::new(0.0, 700.0, 1280.0, 44.0);
         let layout = ThumbnailControlsLayout::compute(bar);
         assert_eq!(layout.toggle, RectF::new(12.0, 704.0, 36.0, 36.0));
-        assert_eq!(layout.dock_menu, RectF::new(52.0, 704.0, 48.0, 36.0));
+        assert_eq!(layout.dock_menu, RectF::new(52.0, 706.0, 44.0, 32.0));
         assert_eq!(
             layout.hit_test(70.0, 720.0),
             Some(ThumbnailControl::DockMenu)
+        );
+        assert_eq!(
+            ThumbnailControl::Toggle.tooltip(),
+            ("显示/隐藏缩略图", 116.0)
         );
     }
 }

@@ -1,8 +1,9 @@
 pub const DEFAULT_DPI: u32 = 96;
 pub const TITLE_BAR_HEIGHT_DIP: f32 = 44.0;
 pub const STATUS_BAR_HEIGHT_DIP: f32 = 44.0;
-pub const HORIZONTAL_THUMBNAIL_EXTENT_DIP: f32 = 112.0;
-pub const VERTICAL_THUMBNAIL_EXTENT_DIP: f32 = 120.0;
+pub const HORIZONTAL_THUMBNAIL_EXTENT_DIP: f32 = 92.0;
+pub const VERTICAL_THUMBNAIL_EXTENT_DIP: f32 = 92.0;
+pub const THUMBNAIL_OVERLAY_MARGIN_DIP: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RectF {
@@ -100,43 +101,51 @@ pub fn compute_layout(input: LayoutInput) -> WindowLayout {
     let content_height = (remaining_after_title - status_height).max(0.0);
     let content = RectF::new(0.0, title_height, width, content_height);
 
-    let mut canvas = content;
+    let canvas = content;
     let mut thumbnail_panel = None;
 
     if input.thumbnail_visible && width > 0.0 && content_height > 0.0 {
         let requested_extent = input.thumbnail_extent_dip.max(0.0);
+        let margin_x = THUMBNAIL_OVERLAY_MARGIN_DIP.min(content.width * 0.5);
+        let margin_y = THUMBNAIL_OVERLAY_MARGIN_DIP.min(content.height * 0.5);
+        let available_width = (content.width - margin_x * 2.0).max(0.0);
+        let available_height = (content.height - margin_y * 2.0).max(0.0);
 
         match input.thumbnail_dock {
             ThumbnailDock::Top => {
-                let extent = requested_extent.min(content.height);
-                thumbnail_panel = Some(RectF::new(content.x, content.y, content.width, extent));
-                canvas.y += extent;
-                canvas.height -= extent;
+                let extent = requested_extent.min(available_height);
+                thumbnail_panel = Some(RectF::new(
+                    content.x + margin_x,
+                    content.y + margin_y,
+                    available_width,
+                    extent,
+                ));
             }
             ThumbnailDock::Bottom => {
-                let extent = requested_extent.min(content.height);
-                canvas.height -= extent;
+                let extent = requested_extent.min(available_height);
                 thumbnail_panel = Some(RectF::new(
-                    content.x,
-                    canvas.bottom(),
-                    content.width,
+                    content.x + margin_x,
+                    content.bottom() - margin_y - extent,
+                    available_width,
                     extent,
                 ));
             }
             ThumbnailDock::Left => {
-                let extent = requested_extent.min(content.width);
-                thumbnail_panel = Some(RectF::new(content.x, content.y, extent, content.height));
-                canvas.x += extent;
-                canvas.width -= extent;
+                let extent = requested_extent.min(available_width);
+                thumbnail_panel = Some(RectF::new(
+                    content.x + margin_x,
+                    content.y + margin_y,
+                    extent,
+                    available_height,
+                ));
             }
             ThumbnailDock::Right => {
-                let extent = requested_extent.min(content.width);
-                canvas.width -= extent;
+                let extent = requested_extent.min(available_width);
                 thumbnail_panel = Some(RectF::new(
-                    canvas.right(),
-                    content.y,
+                    content.right() - margin_x - extent,
+                    content.y + margin_y,
                     extent,
-                    content.height,
+                    available_height,
                 ));
             }
         }
@@ -187,23 +196,23 @@ mod tests {
         let expected = [
             (
                 ThumbnailDock::Top,
-                RectF::new(0.0, 44.0, 1280.0, 112.0),
-                RectF::new(0.0, 156.0, 1280.0, 600.0),
+                RectF::new(12.0, 56.0, 1256.0, 92.0),
+                RectF::new(0.0, 44.0, 1280.0, 712.0),
             ),
             (
                 ThumbnailDock::Bottom,
-                RectF::new(0.0, 644.0, 1280.0, 112.0),
-                RectF::new(0.0, 44.0, 1280.0, 600.0),
+                RectF::new(12.0, 652.0, 1256.0, 92.0),
+                RectF::new(0.0, 44.0, 1280.0, 712.0),
             ),
             (
                 ThumbnailDock::Left,
-                RectF::new(0.0, 44.0, 120.0, 712.0),
-                RectF::new(120.0, 44.0, 1160.0, 712.0),
+                RectF::new(12.0, 56.0, 92.0, 688.0),
+                RectF::new(0.0, 44.0, 1280.0, 712.0),
             ),
             (
                 ThumbnailDock::Right,
-                RectF::new(1160.0, 44.0, 120.0, 712.0),
-                RectF::new(0.0, 44.0, 1160.0, 712.0),
+                RectF::new(1176.0, 56.0, 92.0, 688.0),
+                RectF::new(0.0, 44.0, 1280.0, 712.0),
             ),
         ];
 
