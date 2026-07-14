@@ -58,7 +58,7 @@ impl ThumbnailControlsLayout {
     pub fn compute(status_bar: RectF) -> Self {
         const BUTTON: f32 = 36.0;
         const MENU_HEIGHT: f32 = 32.0;
-        const DOCK_MENU: f32 = 44.0;
+        const DOCK_MENU: f32 = 52.0;
         let button_y = status_bar.y + (status_bar.height - BUTTON).max(0.0) * 0.5;
         let menu_y = status_bar.y + (status_bar.height - MENU_HEIGHT).max(0.0) * 0.5;
         Self {
@@ -82,7 +82,7 @@ impl StatusControlsLayout {
     pub fn compute(status_bar: RectF) -> Self {
         const BUTTON: f32 = 36.0;
         const MENU_HEIGHT: f32 = 32.0;
-        const MENU: f32 = 78.0;
+        const MENU: f32 = 68.0;
         const SLIDER: f32 = 120.0;
         const GAP: f32 = 4.0;
         const RIGHT_PADDING: f32 = 12.0;
@@ -167,6 +167,7 @@ mod tests {
         let bar = RectF::new(0.0, 700.0, 1280.0, 44.0);
         let layout = StatusControlsLayout::compute(bar);
         assert_eq!(layout.zoom_menu.height, 32.0);
+        assert_eq!(layout.zoom_menu.width, 68.0);
         assert_eq!(layout.zoom_menu.y, 706.0);
         assert_eq!(layout.actual_size.height, 36.0);
         assert_eq!(layout.actual_size.y, 704.0);
@@ -177,7 +178,7 @@ mod tests {
         let bar = RectF::new(0.0, 700.0, 1280.0, 44.0);
         let layout = ThumbnailControlsLayout::compute(bar);
         assert_eq!(layout.toggle, RectF::new(12.0, 704.0, 36.0, 36.0));
-        assert_eq!(layout.dock_menu, RectF::new(52.0, 706.0, 44.0, 32.0));
+        assert_eq!(layout.dock_menu, RectF::new(52.0, 706.0, 52.0, 32.0));
         assert_eq!(
             layout.hit_test(70.0, 720.0),
             Some(ThumbnailControl::DockMenu)
