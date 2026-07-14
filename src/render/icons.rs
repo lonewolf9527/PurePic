@@ -46,6 +46,10 @@ mod tests {
     fn embedded_icons_are_valid_and_caption_strokes_are_thin() {
         let icons = IconSet::load();
         assert!(!icons.app.paths.is_empty());
+        for icon in [&icons.context_register, &icons.context_unregister] {
+            assert_eq!((icon.width, icon.height), (1024.0, 1024.0));
+            assert!(icon.paths.iter().all(|path| path.fill && !path.stroke));
+        }
         for icon in [
             icons.window_minimize,
             icons.window_maximize,
