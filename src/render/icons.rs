@@ -52,7 +52,7 @@ mod tests {
             assert!(
                 icon.paths
                     .iter()
-                    .all(|path| (path.stroke_width - 1.6).abs() < f32::EPSILON)
+                    .all(|path| (path.stroke_width - 0.8).abs() < f32::EPSILON)
             );
         }
         for icon in [
