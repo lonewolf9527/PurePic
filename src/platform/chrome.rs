@@ -30,18 +30,20 @@ pub fn apply_dwm_attributes(hwnd: HWND) -> Result<()> {
     };
 
     unsafe {
-        DwmSetWindowAttribute(
+        // These appearance attributes vary by Windows release. Unsupported
+        // attributes should fall back to the system default instead of blocking startup.
+        let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_USE_IMMERSIVE_DARK_MODE,
             &dark_mode as *const _ as _,
             size_of::<BOOL>() as u32,
-        )?;
-        DwmSetWindowAttribute(
+        );
+        let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_WINDOW_CORNER_PREFERENCE,
             &corner as *const _ as _,
             size_of_val(&corner) as u32,
-        )?;
+        );
         DwmExtendFrameIntoClientArea(hwnd, &margins)?;
     }
 
