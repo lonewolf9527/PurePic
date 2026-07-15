@@ -1,6 +1,7 @@
 pub const MIN_ZOOM: f64 = 0.01;
 pub const MAX_ZOOM: f64 = 8.0;
 pub const MIN_INITIAL_IMAGE_EXTENT_PX: f64 = 256.0;
+pub const WHEEL_ZOOM_FACTOR: f64 = 1.10;
 
 pub const ZOOM_STEPS: &[f64] = &[
     0.01, 0.02, 0.05, 0.10, 0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 3.00, 4.00, 5.00, 6.00, 7.00,
@@ -94,6 +95,10 @@ pub fn step_zoom(current: f64, direction: i32) -> f64 {
     }
 }
 
+pub fn wheel_zoom(current: f64, steps: i32) -> f64 {
+    (current.clamp(MIN_ZOOM, MAX_ZOOM) * WHEEL_ZOOM_FACTOR.powi(steps)).clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
 pub fn origin_after_zoom(
     old_origin: PointF,
     anchor_in_viewport: PointF,
@@ -160,6 +165,16 @@ mod tests {
         assert_eq!(step_zoom(1.0, -1), 0.75);
         assert_eq!(step_zoom(MAX_ZOOM, 1), MAX_ZOOM);
         assert_eq!(step_zoom(MAX_ZOOM, -1), 7.0);
+    }
+
+    #[test]
+    fn wheel_zoom_uses_small_reversible_increments_instead_of_presets() {
+        let zoomed_in = wheel_zoom(1.0, 1);
+        assert!((zoomed_in - 1.10).abs() < EPSILON);
+        assert!((wheel_zoom(zoomed_in, -1) - 1.0).abs() < EPSILON);
+        assert!((wheel_zoom(1.0, 3) - 1.331).abs() < EPSILON);
+        assert_eq!(wheel_zoom(MAX_ZOOM, 1), MAX_ZOOM);
+        assert_eq!(wheel_zoom(MIN_ZOOM, -1), MIN_ZOOM);
     }
 
     #[test]

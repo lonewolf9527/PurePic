@@ -17,7 +17,7 @@ use purepic::ui::thumbnail::{
 };
 use purepic::ui::zoom::{
     MAX_ZOOM, MIN_ZOOM, PointF, SizeF, fit_zoom, initial_zoom, origin_after_zoom, slider_to_zoom,
-    step_zoom, zoom_to_slider,
+    step_zoom, wheel_zoom, zoom_to_slider,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -1128,11 +1128,7 @@ impl Renderer {
         let Some(old_destination) = self.image_destination(canvas) else {
             return true;
         };
-        let mut new_zoom = old_zoom as f64;
-        for _ in 0..steps.unsigned_abs() {
-            new_zoom = step_zoom(new_zoom, steps.signum());
-        }
-        let new_zoom = new_zoom as f32;
+        let new_zoom = wheel_zoom(old_zoom as f64, steps) as f32;
         if (new_zoom - old_zoom).abs() <= f32::EPSILON {
             return true;
         }
