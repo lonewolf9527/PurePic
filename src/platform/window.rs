@@ -2,7 +2,7 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use crate::image::{DecodedImage, create_demo_image, decode_preview};
+use crate::image::{DecodedImage, decode_preview};
 use crate::platform::chrome::{apply_dwm_attributes, non_client_hit_test};
 use crate::platform::registry::{self, SavedWindowState, ThumbnailPreferences};
 use crate::platform::thumbnails::{
@@ -45,7 +45,6 @@ const INITIAL_WIDTH: i32 = 1920;
 const INITIAL_HEIGHT: i32 = 1080;
 const MINIMUM_WIDTH: i32 = 890;
 const MINIMUM_HEIGHT: i32 = 890;
-const DEFAULT_DEMO_FILE: &str = "PixPin_2026-01-10_23-22-10.jpg";
 const WM_APP_IMAGE_READY: u32 = WM_APP + 1;
 const WM_APP_DIRECTORY_READY: u32 = WM_APP + 2;
 const WM_APP_THUMBNAIL_READY: u32 = WM_APP + 3;
@@ -82,7 +81,6 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     // if the executable is launched without its embedded manifest.
     let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
 
-    let image_path = image_path.or_else(default_demo_path);
     let saved_window = registry::load_window_state();
     let initial_width = saved_window
         .map(|state| state.width.clamp(MINIMUM_WIDTH as u32, u16::MAX as u32) as i32)
@@ -161,8 +159,6 @@ pub fn run(image_path: Option<PathBuf>) -> Result<()> {
     renderer.set_thumbnail_preferences(thumbnail_preferences.visible, thumbnail_preferences.dock);
     if let Some(path) = &image_path {
         renderer.set_loading(path);
-    } else {
-        renderer.set_image(create_demo_image())?;
     }
     let context_menu_registered = registry::is_context_menu_registered();
     renderer.set_context_menu_registered(context_menu_registered);
@@ -819,25 +815,6 @@ fn update_navigation_timer(hwnd: HWND, state: &WindowState) {
     } else {
         let _ = unsafe { KillTimer(Some(hwnd), NAVIGATION_TIMER_ID) };
     }
-}
-
-fn default_demo_path() -> Option<PathBuf> {
-    let mut candidates = Vec::with_capacity(2);
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(directory) = executable.parent()
-    {
-        candidates.push(directory.join("pics").join(DEFAULT_DEMO_FILE));
-    }
-    if let Ok(directory) = std::env::current_dir() {
-        candidates.push(
-            directory
-                .join("target")
-                .join("release")
-                .join("pics")
-                .join(DEFAULT_DEMO_FILE),
-        );
-    }
-    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn enforce_minimum_window_size(bounds: &mut MINMAXINFO) {
