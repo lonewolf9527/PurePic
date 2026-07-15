@@ -4,6 +4,8 @@ PurePic 是一个面向 Windows x64 的轻量级原生图片查看器，关注�
 
 > 本项目的设计、代码和文档均由 AI 制作。
 
+当前 `1.0.0` Release 的单体 `PurePic.exe` 仅为 **681 KiB（697,344 字节）**，无需安装即可直接运行。
+
 ![PurePic 演示图](images/PixPin_2026-07-15_13-18-04.jpg)
 
 ## 主要功能
@@ -43,3 +45,7 @@ cargo build --release
 ```powershell
 .\target\release\PurePic.exe "D:\Pictures\example.jpg"
 ```
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
