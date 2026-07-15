@@ -1,17 +1,31 @@
 use std::path::Path;
 
 use purepic::ui::layout::ThumbnailDock;
+use purepic::ui::thumbnail::SUPPORTED_IMAGE_EXTENSIONS;
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
     RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
-use windows::core::{PCWSTR, Result};
+use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, ShellExecuteW};
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::core::{PCWSTR, Result, w};
 
 const SETTINGS_KEY: &str = r"Software\PurePic";
 const CONTEXT_MENU_KEY: &str = r"Software\Classes\SystemFileAssociations\image\shell\PurePic";
 const CONTEXT_MENU_COMMAND_KEY: &str =
     r"Software\Classes\SystemFileAssociations\image\shell\PurePic\command";
+const APP_NAME: &str = "PurePic";
+const PROG_ID: &str = "PurePic.Image";
+const PROG_ID_KEY: &str = r"Software\Classes\PurePic.Image";
+const CAPABILITIES_KEY: &str = r"Software\PurePic\Capabilities";
+const FILE_ASSOCIATIONS_KEY: &str = r"Software\PurePic\Capabilities\FileAssociations";
+const REGISTERED_APPLICATIONS_KEY: &str = r"Software\RegisteredApplications";
+const APPLICATION_KEY: &str = r"Software\Classes\Applications\PurePic.exe";
+const APPLICATION_COMMAND_KEY: &str =
+    r"Software\Classes\Applications\PurePic.exe\shell\open\command";
+const APPLICATION_SUPPORTED_TYPES_KEY: &str =
+    r"Software\Classes\Applications\PurePic.exe\SupportedTypes";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SavedWindowState {
@@ -98,6 +112,23 @@ pub fn set_context_menu_registered(registered: bool) -> Result<()> {
     result
 }
 
+pub fn register_default_app_and_open_settings() -> Result<()> {
+    let executable = std::env::current_exe()?;
+    register_default_app(&executable)?;
+    unsafe {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+        let _ = ShellExecuteW(
+            None,
+            w!("open"),
+            w!("ms-settings:defaultapps?registeredAppUser=PurePic"),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+    Ok(())
+}
+
 fn register_context_menu(executable: &Path) -> Result<()> {
     let shell_key = create_key(CONTEXT_MENU_KEY)?;
     set_string(&shell_key, None, "使用 PurePic 打开")?;
@@ -110,6 +141,44 @@ fn register_context_menu(executable: &Path) -> Result<()> {
 
     let command_key = create_key(CONTEXT_MENU_COMMAND_KEY)?;
     set_string(&command_key, None, &context_menu_command(executable))
+}
+
+fn register_default_app(executable: &Path) -> Result<()> {
+    let icon = format!("\"{}\",0", executable.display());
+    let command = context_menu_command(executable);
+
+    let prog_id = create_key(PROG_ID_KEY)?;
+    set_string(&prog_id, None, "PurePic 图片")?;
+    set_string(&prog_id, Some("FriendlyTypeName"), "PurePic 图片")?;
+
+    let default_icon = create_key(&format!(r"{PROG_ID_KEY}\DefaultIcon"))?;
+    set_string(&default_icon, None, &icon)?;
+    let prog_id_command = create_key(&format!(r"{PROG_ID_KEY}\shell\open\command"))?;
+    set_string(&prog_id_command, None, &command)?;
+
+    let application = create_key(APPLICATION_KEY)?;
+    set_string(&application, Some("FriendlyAppName"), APP_NAME)?;
+    let application_command = create_key(APPLICATION_COMMAND_KEY)?;
+    set_string(&application_command, None, &command)?;
+    let supported_types = create_key(APPLICATION_SUPPORTED_TYPES_KEY)?;
+
+    let capabilities = create_key(CAPABILITIES_KEY)?;
+    set_string(&capabilities, Some("ApplicationName"), APP_NAME)?;
+    set_string(
+        &capabilities,
+        Some("ApplicationDescription"),
+        "快速、原生的 Windows 图片查看器",
+    )?;
+    set_string(&capabilities, Some("ApplicationIcon"), &icon)?;
+    let associations = create_key(FILE_ASSOCIATIONS_KEY)?;
+    for extension in SUPPORTED_IMAGE_EXTENSIONS {
+        let extension = format!(".{extension}");
+        set_string(&associations, Some(&extension), PROG_ID)?;
+        set_string(&supported_types, Some(&extension), "")?;
+    }
+
+    let registered_applications = create_key(REGISTERED_APPLICATIONS_KEY)?;
+    set_string(&registered_applications, Some(APP_NAME), CAPABILITIES_KEY)
 }
 
 fn context_menu_command(executable: &Path) -> String {

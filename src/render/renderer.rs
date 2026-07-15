@@ -1,7 +1,8 @@
 use crate::image::DecodedImage;
 use crate::render::icons::IconSet;
 use purepic::ui::chrome::{
-    CAPTION_BUTTON_WIDTH_DIP, CaptionButton, title_action_button_rect, title_action_separator_x,
+    CAPTION_BUTTON_WIDTH_DIP, CaptionButton, default_app_button_rect, title_action_button_rect,
+    title_action_separator_x,
 };
 use purepic::ui::controls::{
     StatusControl, StatusControlsLayout, ThumbnailControl, ThumbnailControlsLayout,
@@ -15,7 +16,8 @@ use purepic::ui::thumbnail::{
     visible_prefetch_range,
 };
 use purepic::ui::zoom::{
-    MAX_ZOOM, MIN_ZOOM, SizeF, fit_zoom, initial_zoom, slider_to_zoom, step_zoom, zoom_to_slider,
+    MAX_ZOOM, MIN_ZOOM, PointF, SizeF, fit_zoom, initial_zoom, origin_after_zoom, slider_to_zoom,
+    step_zoom, zoom_to_slider,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -83,6 +85,7 @@ const NAVIGATION_SHOW_DELAY: Duration = Duration::from_millis(120);
 const NAVIGATION_FADE_IN_SECONDS: f32 = 0.14;
 const NAVIGATION_FADE_OUT_SECONDS: f32 = 0.32;
 const PAN_OVERFLOW_EPSILON_DIP: f32 = 0.5;
+const WHEEL_DELTA: i32 = 120;
 
 const fn color(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     color_alpha(r, g, b, 1.0)
@@ -132,6 +135,7 @@ pub struct Renderer {
     height_px: u32,
     caption_hot: CaptionButton,
     title_action_hot: bool,
+    default_app_hot: bool,
     context_menu_registered: bool,
     maximized: bool,
     title: String,
@@ -166,6 +170,7 @@ pub struct Renderer {
     pan_x: f32,
     pan_y: f32,
     pan_last_position: Option<(f32, f32)>,
+    zoom_wheel_remainder: i32,
 }
 
 struct RenderedImage {
@@ -223,6 +228,7 @@ pub enum PointerAction {
     BeginPan,
     ToggleFullscreen,
     ToggleContextMenu,
+    OpenDefaultAppSettings,
     ThumbnailPreferencesChanged,
     OpenThumbnail(usize),
 }
@@ -352,6 +358,7 @@ impl Renderer {
             height_px,
             caption_hot: CaptionButton::None,
             title_action_hot: false,
+            default_app_hot: false,
             context_menu_registered: false,
             maximized: false,
             title: "PurePic".to_owned(),
@@ -386,6 +393,7 @@ impl Renderer {
             pan_x: 0.0,
             pan_y: 0.0,
             pan_last_position: None,
+            zoom_wheel_remainder: 0,
         };
         renderer.create_target()?;
         Ok(renderer)
@@ -463,7 +471,7 @@ impl Renderer {
                     );
                 }
                 self.draw_title_brand(layout.title_bar);
-                self.draw_title_action(layout.title_bar);
+                self.draw_title_actions(layout.title_bar);
                 self.draw_caption_buttons(layout.title_bar);
                 self.draw_thumbnail_controls(thumbnail_controls);
                 draw_text(
@@ -550,6 +558,7 @@ impl Renderer {
         self.status_hot = None;
         self.zoom_menu_hot = None;
         self.title_action_hot = false;
+        self.default_app_hot = false;
         self.thumbnail_hot = None;
         self.thumbnail_control_hot = None;
         self.dock_menu_open = false;
@@ -596,6 +605,8 @@ impl Renderer {
         };
         let title_action_hot =
             !self.fullscreen && title_action_button_rect(layout.title_bar).contains(x, y);
+        let default_app_hot =
+            !self.fullscreen && default_app_button_rect(layout.title_bar).contains(x, y);
         let thumbnail_hot = if self.fullscreen {
             None
         } else {
@@ -620,6 +631,7 @@ impl Renderer {
         if self.status_hot == status_hot
             && self.zoom_menu_hot == zoom_menu_hot
             && self.title_action_hot == title_action_hot
+            && self.default_app_hot == default_app_hot
             && self.thumbnail_hot == thumbnail_hot
             && self.thumbnail_control_hot == thumbnail_control_hot
             && self.dock_menu_hot == dock_menu_hot
@@ -632,6 +644,7 @@ impl Renderer {
         self.status_hot = status_hot;
         self.zoom_menu_hot = zoom_menu_hot;
         self.title_action_hot = title_action_hot;
+        self.default_app_hot = default_app_hot;
         self.thumbnail_hot = thumbnail_hot;
         self.thumbnail_control_hot = thumbnail_control_hot;
         self.dock_menu_hot = dock_menu_hot;
@@ -645,6 +658,7 @@ impl Renderer {
         let changed = self.status_hot.is_some()
             || self.zoom_menu_hot.is_some()
             || self.title_action_hot
+            || self.default_app_hot
             || self.thumbnail_hot.is_some()
             || self.thumbnail_control_hot.is_some()
             || self.dock_menu_hot.is_some()
@@ -654,6 +668,7 @@ impl Renderer {
         self.status_hot = None;
         self.zoom_menu_hot = None;
         self.title_action_hot = false;
+        self.default_app_hot = false;
         self.thumbnail_hot = None;
         self.thumbnail_control_hot = None;
         self.dock_menu_hot = None;
@@ -695,6 +710,9 @@ impl Renderer {
         }
         if self.fullscreen {
             return self.begin_pan(x, y, layout.canvas);
+        }
+        if default_app_button_rect(layout.title_bar).contains(x, y) {
+            return PointerAction::OpenDefaultAppSettings;
         }
         if title_action_button_rect(layout.title_bar).contains(x, y) {
             return PointerAction::ToggleContextMenu;
@@ -1078,6 +1096,62 @@ impl Renderer {
         (self.thumbnail_scroll - previous).abs() > f32::EPSILON
     }
 
+    pub fn zoom_canvas_at(&mut self, x_px: i32, y_px: i32, wheel_delta: i16) -> bool {
+        let (x, y) = self.point_to_dip(x_px, y_px);
+        let layout = self.current_layout();
+        if !layout.canvas.contains(x, y)
+            || layout
+                .thumbnail_panel
+                .is_some_and(|panel| panel.contains(x, y))
+            || self.image.is_none()
+        {
+            self.zoom_wheel_remainder = 0;
+            return false;
+        }
+
+        let delta = i32::from(wheel_delta);
+        if delta == 0 {
+            return true;
+        }
+        if self.zoom_wheel_remainder != 0 && self.zoom_wheel_remainder.signum() != delta.signum() {
+            self.zoom_wheel_remainder = 0;
+        }
+        self.zoom_wheel_remainder += delta;
+        let steps = self.zoom_wheel_remainder / WHEEL_DELTA;
+        self.zoom_wheel_remainder %= WHEEL_DELTA;
+        if steps == 0 {
+            return true;
+        }
+
+        let canvas = layout.canvas;
+        let old_zoom = self.current_zoom(canvas);
+        let Some(old_destination) = self.image_destination(canvas) else {
+            return true;
+        };
+        let mut new_zoom = old_zoom as f64;
+        for _ in 0..steps.unsigned_abs() {
+            new_zoom = step_zoom(new_zoom, steps.signum());
+        }
+        let new_zoom = new_zoom as f32;
+        if (new_zoom - old_zoom).abs() <= f32::EPSILON {
+            return true;
+        }
+
+        self.fit_mode = false;
+        self.zoom = new_zoom;
+        (self.pan_x, self.pan_y) = pan_after_anchored_zoom(
+            canvas,
+            old_destination,
+            PointF::new(x as f64, y as f64),
+            old_zoom,
+            new_zoom,
+        );
+        self.constrain_pan();
+        self.zoom_menu_open = false;
+        self.zoom_menu_hot = None;
+        true
+    }
+
     pub fn set_loading(&mut self, path: &std::path::Path) {
         self.title = display_file_name(path);
         self.message = "Loading image…".to_owned();
@@ -1138,6 +1212,7 @@ impl Renderer {
         self.pan_x = 0.0;
         self.pan_y = 0.0;
         self.pan_last_position = None;
+        self.zoom_wheel_remainder = 0;
         Ok(())
     }
 
@@ -1269,7 +1344,27 @@ impl Renderer {
         }
     }
 
-    unsafe fn draw_title_action(&self, title_bar: RectF) {
+    unsafe fn draw_title_actions(&self, title_bar: RectF) {
+        let default_button = default_app_button_rect(title_bar);
+        if self.default_app_hot {
+            let hover = centered_square(default_button, 36.0);
+            unsafe {
+                self.context.FillRoundedRectangle(
+                    &to_d2d_rounded_rect(hover, 6.0),
+                    &self.caption_hover_brush,
+                )
+            };
+        }
+        unsafe {
+            draw_icon(
+                &self.context,
+                &self.d2d_factory,
+                &self.icons.default_app,
+                centered_square(default_button, 24.0),
+                &self.primary_text_brush,
+            );
+        }
+
         let button = title_action_button_rect(title_bar);
         if self.title_action_hot {
             let hover = centered_square(button, 36.0);
@@ -1304,11 +1399,28 @@ impl Renderer {
     }
 
     unsafe fn draw_title_action_tooltip(&self, title_bar: RectF, canvas: RectF) {
-        if !self.title_action_hot {
+        if !self.title_action_hot && !self.default_app_hot {
             return;
         }
-        let button = title_action_button_rect(title_bar);
-        let width = 132.0;
+        let (button, label, width) = if self.default_app_hot {
+            (
+                default_app_button_rect(title_bar),
+                "设置为默认图片应用",
+                140.0,
+            )
+        } else if self.context_menu_registered {
+            (
+                title_action_button_rect(title_bar),
+                "取消图片右键菜单",
+                132.0,
+            )
+        } else {
+            (
+                title_action_button_rect(title_bar),
+                "注册图片右键菜单",
+                132.0,
+            )
+        };
         let rect = RectF::new(
             (button.x + (button.width - width) * 0.5)
                 .clamp(canvas.x + 8.0, canvas.right() - width - 8.0),
@@ -1316,11 +1428,6 @@ impl Renderer {
             width,
             32.0,
         );
-        let label = if self.context_menu_registered {
-            "取消图片右键菜单"
-        } else {
-            "注册图片右键菜单"
-        };
         unsafe {
             self.context
                 .FillRoundedRectangle(&to_d2d_rounded_rect(rect, 6.0), &self.title_brush);
@@ -2311,7 +2418,7 @@ fn centered_square(rect: RectF, size: f32) -> RectF {
 
 fn title_text_rect(title_bar: RectF) -> RectF {
     let left = title_bar.x + TITLE_TEXT_LEFT_DIP;
-    let right = title_action_button_rect(title_bar).x - 8.0;
+    let right = default_app_button_rect(title_bar).x - 8.0;
     RectF::new(left, title_bar.y, (right - left).max(0.0), title_bar.height)
 }
 
@@ -2432,6 +2539,28 @@ fn constrain_pan_axis(pan: f32, image_extent: f32, canvas_extent: f32) -> f32 {
     }
     let limit = (image_extent - canvas_extent) * 0.5;
     pan.clamp(-limit, limit)
+}
+
+fn pan_after_anchored_zoom(
+    canvas: RectF,
+    old_destination: RectF,
+    anchor: PointF,
+    old_zoom: f32,
+    new_zoom: f32,
+) -> (f32, f32) {
+    let new_origin = origin_after_zoom(
+        PointF::new(old_destination.x as f64, old_destination.y as f64),
+        anchor,
+        old_zoom as f64,
+        new_zoom as f64,
+    );
+    let ratio = new_zoom / old_zoom;
+    let new_width = old_destination.width * ratio;
+    let new_height = old_destination.height * ratio;
+    (
+        new_origin.x as f32 - (canvas.x + (canvas.width - new_width) * 0.5),
+        new_origin.y as f32 - (canvas.y + (canvas.height - new_height) * 0.5),
+    )
 }
 
 fn image_exceeds_canvas(canvas: RectF, width: f32, height: f32) -> bool {
@@ -2592,6 +2721,24 @@ mod tests {
     }
 
     #[test]
+    fn anchored_zoom_preserves_the_image_point_under_the_pointer() {
+        let canvas = RectF::new(0.0, 0.0, 800.0, 600.0);
+        let old_destination = RectF::new(0.0, 0.0, 800.0, 600.0);
+        let anchor = PointF::new(200.0, 150.0);
+        let (pan_x, pan_y) = pan_after_anchored_zoom(canvas, old_destination, anchor, 1.0, 2.0);
+
+        assert_eq!((pan_x, pan_y), (200.0, 150.0));
+        let new_origin = PointF::new(-400.0 + pan_x as f64, -300.0 + pan_y as f64);
+        assert_eq!(
+            PointF::new(
+                (anchor.x - new_origin.x) / 2.0,
+                (anchor.y - new_origin.y) / 2.0,
+            ),
+            PointF::new(200.0, 150.0)
+        );
+    }
+
+    #[test]
     fn navigation_buttons_fade_in_faster_than_they_fade_out() {
         assert_eq!(navigation_opacity_after(0.0, 0.07, true), 0.5);
         assert_eq!(navigation_opacity_after(1.0, 0.16, false), 0.5);
@@ -2617,7 +2764,7 @@ mod tests {
         let bar = RectF::new(0.0, 0.0, 890.0, 44.0);
         let text = title_text_rect(bar);
         assert_eq!(text.x, 176.0);
-        assert_eq!(text.right(), 696.0);
+        assert_eq!(text.right(), 660.0);
 
         let narrow = title_text_rect(RectF::new(0.0, 0.0, 300.0, 44.0));
         assert_eq!(narrow.width, 0.0);

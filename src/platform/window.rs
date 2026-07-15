@@ -295,6 +295,9 @@ unsafe extern "system" fn window_proc(
                             state.renderer.set_context_menu_registered(registered);
                         }
                     }
+                    PointerAction::OpenDefaultAppSettings => {
+                        let _ = registry::register_default_app_and_open_settings();
+                    }
                     PointerAction::OpenThumbnail(index) => {
                         open_thumbnail(hwnd, state, index);
                     }
@@ -351,16 +354,20 @@ unsafe extern "system" fn window_proc(
                     x: signed_low_word(lparam.0),
                     y: signed_high_word(lparam.0),
                 };
-                if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool()
-                    && state.renderer.scroll_thumbnails(
-                        point.x,
-                        point.y,
-                        signed_high_word(wparam.0 as isize) as i16,
-                    )
-                {
-                    queue_thumbnail_requests(state);
-                    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
-                    return LRESULT(0);
+                if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool() {
+                    let wheel_delta = signed_high_word(wparam.0 as isize) as i16;
+                    if state
+                        .renderer
+                        .scroll_thumbnails(point.x, point.y, wheel_delta)
+                    {
+                        queue_thumbnail_requests(state);
+                        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                        return LRESULT(0);
+                    }
+                    if state.renderer.zoom_canvas_at(point.x, point.y, wheel_delta) {
+                        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                        return LRESULT(0);
+                    }
                 }
             }
             unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }

@@ -1,7 +1,8 @@
 use std::mem::size_of;
 
 use purepic::ui::chrome::{
-    CAPTION_BUTTON_WIDTH_DIP, TITLE_ACTION_BUTTON_WIDTH_DIP, TITLE_ACTION_RIGHT_GAP_DIP,
+    CAPTION_BUTTON_WIDTH_DIP, TITLE_ACTION_BUTTON_WIDTH_DIP, TITLE_ACTION_COUNT,
+    TITLE_ACTION_RIGHT_GAP_DIP,
 };
 use purepic::ui::layout::TITLE_BAR_HEIGHT_DIP;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
@@ -92,7 +93,11 @@ pub fn non_client_hit_test(hwnd: HWND, lparam: LPARAM) -> u32 {
 
     let button_width = scale_dip(CAPTION_BUTTON_WIDTH_DIP as i32, dpi);
     let action_right = width - button_width * 3 - scale_dip(TITLE_ACTION_RIGHT_GAP_DIP as i32, dpi);
-    let action_left = action_right - scale_dip(TITLE_ACTION_BUTTON_WIDTH_DIP as i32, dpi);
+    let action_left = action_right
+        - scale_dip(
+            (TITLE_ACTION_BUTTON_WIDTH_DIP * TITLE_ACTION_COUNT) as i32,
+            dpi,
+        );
     if x >= action_left && x < action_right {
         return HTCLIENT;
     }

@@ -3,6 +3,7 @@ use crate::ui::layout::RectF;
 pub const CAPTION_BUTTON_WIDTH_DIP: f32 = 46.0;
 pub const TITLE_ACTION_BUTTON_WIDTH_DIP: f32 = 36.0;
 pub const TITLE_ACTION_RIGHT_GAP_DIP: f32 = 12.0;
+pub const TITLE_ACTION_COUNT: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CaptionButton {
@@ -24,6 +25,16 @@ pub fn title_action_button_rect(title_bar: RectF) -> RectF {
     )
 }
 
+pub fn default_app_button_rect(title_bar: RectF) -> RectF {
+    let context_menu = title_action_button_rect(title_bar);
+    RectF::new(
+        context_menu.x - TITLE_ACTION_BUTTON_WIDTH_DIP,
+        context_menu.y,
+        TITLE_ACTION_BUTTON_WIDTH_DIP,
+        context_menu.height,
+    )
+}
+
 pub fn title_action_separator_x(title_bar: RectF) -> f32 {
     title_bar.right() - CAPTION_BUTTON_WIDTH_DIP * 3.0 - TITLE_ACTION_RIGHT_GAP_DIP * 0.5
 }
@@ -37,6 +48,10 @@ mod tests {
         let title = RectF::new(0.0, 0.0, 890.0, 44.0);
         let action = title_action_button_rect(title);
         assert_eq!(action, RectF::new(704.0, 0.0, 36.0, 44.0));
+        assert_eq!(
+            default_app_button_rect(title),
+            RectF::new(668.0, 0.0, 36.0, 44.0)
+        );
         assert_eq!(title_action_separator_x(title), 746.0);
     }
 }

@@ -2,6 +2,7 @@ use purepic::ui::icon::Icon;
 
 pub struct IconSet {
     pub app: Icon,
+    pub default_app: Icon,
     pub context_register: Icon,
     pub context_unregister: Icon,
     pub thumbnails: Icon,
@@ -26,6 +27,7 @@ impl IconSet {
     pub fn load() -> Self {
         Self {
             app: load(include_str!("../../Assets/icons/app.svg")),
+            default_app: load(include_str!("../../Assets/icons/default-app.svg")),
             context_register: load(include_str!("../../Assets/icons/context-register.svg")),
             context_unregister: load(include_str!("../../Assets/icons/context-unregister.svg")),
             thumbnails: load(include_str!("../../Assets/icons/thumbnails.svg")),
@@ -60,6 +62,7 @@ mod tests {
     fn embedded_icons_are_valid_and_caption_strokes_are_thin() {
         let icons = IconSet::load();
         assert!(!icons.app.paths.is_empty());
+        assert!(!icons.default_app.paths.is_empty());
         for icon in [&icons.context_register, &icons.context_unregister] {
             assert_eq!((icon.width, icon.height), (24.0, 24.0));
             assert!(icon.paths.iter().all(|path| !path.fill && path.stroke));

@@ -9,6 +9,8 @@ pub const THUMBNAIL_ITEM_EXTENT_DIP: f32 = 84.0;
 pub const THUMBNAIL_PANEL_PADDING_DIP: f32 = 8.0;
 pub const THUMBNAIL_CACHE_BUDGET_BYTES: usize = 32 * 1024 * 1024;
 pub const THUMBNAIL_QUEUE_CAPACITY: usize = 24;
+pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] =
+    &["jpg", "jpeg", "png", "bmp", "gif", "tif", "tiff", "webp"];
 
 pub fn fit_thumbnail_overlay(
     mut available: RectF,
@@ -33,10 +35,7 @@ pub fn is_supported_image(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "jpg" | "jpeg" | "png" | "bmp" | "gif" | "tif" | "tiff" | "webp"
-            )
+            SUPPORTED_IMAGE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
         })
 }
 
