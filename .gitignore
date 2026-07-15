@@ -1,5 +1,6 @@
 # Local design documents and reference images
 /Doc/
+/AGENTS.md
 
 # Rust build output
 /target/
@@ -19,4 +20,3 @@
 # OS metadata
 .DS_Store
 Thumbs.db
-

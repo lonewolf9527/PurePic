@@ -8,10 +8,13 @@ const ICON_RESOURCE_ID: u16 = 1;
 fn main() {
     let project_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let manifest = project_dir.join("app.manifest");
+    let package_version = env::var("CARGO_PKG_VERSION").expect("missing Cargo package version");
+    let resource_version = resource_version(&package_version);
 
     println!("cargo:rerun-if-changed={}", manifest.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Assets/icons");
+    println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -27,12 +30,48 @@ fn main() {
     let escaped_icon = icon_path.to_string_lossy().replace('\\', "\\\\");
     fs::write(
         &resource_path,
-        format!("{ICON_RESOURCE_ID} ICON \"{escaped_icon}\"\n"),
+        format!(
+            r#"{ICON_RESOURCE_ID} ICON "{escaped_icon}"
+
+1 VERSIONINFO
+FILEVERSION {resource_version}
+PRODUCTVERSION {resource_version}
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "FileDescription", "PurePic image viewer\0"
+            VALUE "FileVersion", "{package_version}\0"
+            VALUE "InternalName", "PurePic\0"
+            VALUE "OriginalFilename", "PurePic.exe\0"
+            VALUE "ProductName", "PurePic\0"
+            VALUE "ProductVersion", "{package_version}\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END
+"#,
+        ),
     )
     .expect("failed to generate PurePic resource script");
     embed_resource::compile(&resource_path, embed_resource::NONE)
         .manifest_required()
         .expect("failed to embed PurePic icon");
+}
+
+fn resource_version(version: &str) -> String {
+    let mut parts = version.split('.').take(4).collect::<Vec<_>>();
+    parts.resize(4, "0");
+    parts.join(",")
 }
 
 fn write_icon(path: &Path) -> io::Result<()> {

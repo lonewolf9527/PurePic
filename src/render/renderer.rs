@@ -72,8 +72,8 @@ const MUTED_TEXT: D2D1_COLOR_F = color(0x73, 0x7E, 0x85);
 const CAPTION_HOVER: D2D1_COLOR_F = color(0x31, 0x3A, 0x3F);
 const CAPTION_CLOSE_HOVER: D2D1_COLOR_F = color(0xC4, 0x2B, 0x1C);
 const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
-const APP_TITLE: &str = "PurePic 图片查看器";
-const TITLE_TEXT_LEFT_DIP: f32 = 176.0;
+const APP_TITLE: &str = concat!("PurePic 图片查看器 v", env!("CARGO_PKG_VERSION"));
+const TITLE_TEXT_LEFT_DIP: f32 = 232.0;
 const STATUS_TEXT_LEFT_DIP: f32 = 128.0;
 const STATUS_TEXT_RIGHT_RESERVED_DIP: f32 = 422.0;
 const NAVIGATION_BUTTON_WIDTH_DIP: f32 = 36.0;
@@ -1321,7 +1321,12 @@ impl Renderer {
             20.0,
             20.0,
         );
-        let label = RectF::new(icon.right() + 8.0, title_bar.y, 180.0, title_bar.height);
+        let label = RectF::new(
+            icon.right() + 8.0,
+            title_bar.y,
+            TITLE_TEXT_LEFT_DIP - icon.right() - 16.0,
+            title_bar.height,
+        );
         unsafe {
             draw_icon(
                 &self.context,
@@ -2759,7 +2764,7 @@ mod tests {
     fn title_text_stays_between_brand_and_caption_buttons() {
         let bar = RectF::new(0.0, 0.0, 890.0, 44.0);
         let text = title_text_rect(bar);
-        assert_eq!(text.x, 176.0);
+        assert_eq!(text.x, 232.0);
         assert_eq!(text.right(), 660.0);
 
         let narrow = title_text_rect(RectF::new(0.0, 0.0, 300.0, 44.0));
