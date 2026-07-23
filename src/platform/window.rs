@@ -288,6 +288,9 @@ unsafe extern "system" fn window_proc(
                     PointerAction::DeleteCurrent => {
                         delete_current_image(hwnd, state);
                     }
+                    PointerAction::RefreshCatalog => {
+                        refresh_image_catalog(hwnd, state);
+                    }
                     PointerAction::ToggleContextMenu => {
                         let registered = !state.context_menu_registered;
                         if registry::set_context_menu_registered(registered).is_ok() {
@@ -417,6 +420,9 @@ unsafe extern "system" fn window_proc(
                     }
                     0x2E => {
                         delete_current_image(hwnd, state);
+                    }
+                    0x74 => {
+                        refresh_image_catalog(hwnd, state);
                     }
                     0x7A => {
                         fullscreen_request = Some(!state.fullscreen);
@@ -812,6 +818,25 @@ fn delete_current_image(hwnd: HWND, state: &mut WindowState) {
     }
     queue_thumbnail_requests(state);
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+fn refresh_image_catalog(hwnd: HWND, state: &mut WindowState) {
+    if !state.renderer.has_image() {
+        return;
+    }
+    let Some(path) = state.requested_path.clone() else {
+        return;
+    };
+    state.directory_generation = state.directory_generation.wrapping_add(1);
+    state.directory_scan_started = true;
+    state.thumbnail_loader.replace_pending(Vec::new());
+    spawn_directory_scan(
+        hwnd,
+        path,
+        state.directory_generation,
+        state.directory_sender.clone(),
+        WM_APP_DIRECTORY_READY,
+    );
 }
 
 fn save_thumbnail_preferences(state: &WindowState) {

@@ -3,6 +3,7 @@ use purepic::ui::icon::Icon;
 pub struct IconSet {
     pub app: Icon,
     pub delete: Icon,
+    pub refresh: Icon,
     pub default_app: Icon,
     pub context_register: Icon,
     pub context_unregister: Icon,
@@ -29,6 +30,7 @@ impl IconSet {
         Self {
             app: load(include_str!("../../Assets/icons/app.svg")),
             delete: load(include_str!("../../Assets/icons/delete.svg")),
+            refresh: load(include_str!("../../Assets/icons/refresh.svg")),
             default_app: load(include_str!("../../Assets/icons/default-app.svg")),
             context_register: load(include_str!("../../Assets/icons/context-register.svg")),
             context_unregister: load(include_str!("../../Assets/icons/context-unregister.svg")),
@@ -65,6 +67,7 @@ mod tests {
         let icons = IconSet::load();
         assert!(!icons.app.paths.is_empty());
         assert!(!icons.delete.paths.is_empty());
+        assert!(!icons.refresh.paths.is_empty());
         assert!(!icons.default_app.paths.is_empty());
         for icon in [&icons.context_register, &icons.context_unregister] {
             assert_eq!((icon.width, icon.height), (24.0, 24.0));

@@ -75,7 +75,7 @@ const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
 const APP_TITLE: &str = concat!("PurePic 图片查看器 ", env!("CARGO_PKG_VERSION"));
 const TITLE_TEXT_LEFT_DIP: f32 = 232.0;
 const STATUS_TEXT_LEFT_DIP: f32 = 128.0;
-const STATUS_TEXT_RIGHT_RESERVED_DIP: f32 = 462.0;
+const STATUS_TEXT_RIGHT_RESERVED_DIP: f32 = 502.0;
 const NAVIGATION_BUTTON_WIDTH_DIP: f32 = 36.0;
 const NAVIGATION_BUTTON_HEIGHT_DIP: f32 = 64.0;
 const NAVIGATION_EDGE_INSET_DIP: f32 = 16.0;
@@ -228,6 +228,7 @@ pub enum PointerAction {
     BeginPan,
     ToggleFullscreen,
     DeleteCurrent,
+    RefreshCatalog,
     ToggleContextMenu,
     OpenDefaultAppSettings,
     ThumbnailPreferencesChanged,
@@ -598,7 +599,8 @@ impl Renderer {
                 .hit_test(x, y)
                 .filter(|control| {
                     control.tooltip().is_some()
-                        && (*control != StatusControl::Delete || self.image.is_some())
+                        && (!matches!(*control, StatusControl::Delete | StatusControl::Refresh)
+                            || self.image.is_some())
                 })
         };
         let zoom_menu_hot = if self.zoom_menu_open && !self.fullscreen {
@@ -792,6 +794,10 @@ impl Renderer {
                 return PointerAction::DeleteCurrent;
             }
             Some(StatusControl::Delete) => {}
+            Some(StatusControl::Refresh) if self.image.is_some() => {
+                return PointerAction::RefreshCatalog;
+            }
+            Some(StatusControl::Refresh) => {}
             Some(StatusControl::ActualSize) => {
                 self.fit_mode = false;
                 self.zoom = 1.0;
@@ -1657,6 +1663,17 @@ impl Renderer {
                 &self.d2d_factory,
                 &self.icons.delete,
                 inset(controls.delete, icon_inset),
+                if self.image.is_some() {
+                    &self.primary_text_brush
+                } else {
+                    &self.muted_text_brush
+                },
+            );
+            draw_icon(
+                &self.context,
+                &self.d2d_factory,
+                &self.icons.refresh,
+                inset(controls.refresh, icon_inset),
                 if self.image.is_some() {
                     &self.primary_text_brush
                 } else {
