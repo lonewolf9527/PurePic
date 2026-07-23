@@ -75,7 +75,7 @@ const ACCENT: D2D1_COLOR_F = color(0x28, 0xD7, 0xE2);
 const APP_TITLE: &str = concat!("PurePic 图片查看器 ", env!("CARGO_PKG_VERSION"));
 const TITLE_TEXT_LEFT_DIP: f32 = 232.0;
 const STATUS_TEXT_LEFT_DIP: f32 = 128.0;
-const STATUS_TEXT_RIGHT_RESERVED_DIP: f32 = 422.0;
+const STATUS_TEXT_RIGHT_RESERVED_DIP: f32 = 462.0;
 const NAVIGATION_BUTTON_WIDTH_DIP: f32 = 36.0;
 const NAVIGATION_BUTTON_HEIGHT_DIP: f32 = 64.0;
 const NAVIGATION_EDGE_INSET_DIP: f32 = 16.0;
@@ -227,6 +227,7 @@ pub enum PointerAction {
     BeginThumbnailScroll,
     BeginPan,
     ToggleFullscreen,
+    DeleteCurrent,
     ToggleContextMenu,
     OpenDefaultAppSettings,
     ThumbnailPreferencesChanged,
@@ -595,7 +596,10 @@ impl Renderer {
         } else {
             StatusControlsLayout::compute(layout.status_bar)
                 .hit_test(x, y)
-                .filter(|control| control.tooltip().is_some())
+                .filter(|control| {
+                    control.tooltip().is_some()
+                        && (*control != StatusControl::Delete || self.image.is_some())
+                })
         };
         let zoom_menu_hot = if self.zoom_menu_open && !self.fullscreen {
             let controls = StatusControlsLayout::compute(layout.status_bar);
@@ -784,6 +788,10 @@ impl Renderer {
         }
 
         match controls.hit_test(x, y) {
+            Some(StatusControl::Delete) if self.image.is_some() => {
+                return PointerAction::DeleteCurrent;
+            }
+            Some(StatusControl::Delete) => {}
             Some(StatusControl::ActualSize) => {
                 self.fit_mode = false;
                 self.zoom = 1.0;
@@ -1062,6 +1070,27 @@ impl Renderer {
             .map(|item| item.path.clone())
     }
 
+    pub fn remove_thumbnail_and_select_neighbor(&mut self, path: &Path) -> Option<PathBuf> {
+        let index = self
+            .thumbnail_items
+            .iter()
+            .position(|item| paths_equal(&item.path, path))?;
+        let removed = self.thumbnail_items.remove(index);
+        self.thumbnail_cache_bytes = self.thumbnail_cache_bytes.saturating_sub(removed.byte_size);
+        self.thumbnail_selected =
+            selected_index_after_removal(self.thumbnail_items.len() + 1, index);
+        self.thumbnail_hot = None;
+        self.thumbnail_scroll_drag = None;
+        self.navigation_target = None;
+        self.navigation_displayed = None;
+        self.navigation_hot = None;
+        self.navigation_opacity = 0.0;
+        self.center_selected_thumbnail();
+        self.thumbnail_selected
+            .and_then(|selected| self.thumbnail_items.get(selected))
+            .map(|item| item.path.clone())
+    }
+
     pub fn adjacent_thumbnail_index(&self, direction: i32) -> Option<usize> {
         let selected = self.thumbnail_selected?;
         if direction < 0 {
@@ -1217,6 +1246,27 @@ impl Renderer {
         self.status = "Unable to open image".to_owned();
         self.message = error.to_owned();
         self.image = None;
+    }
+
+    pub fn has_image(&self) -> bool {
+        self.image.is_some()
+    }
+
+    pub fn set_status_message(&mut self, message: String) {
+        self.status = message;
+    }
+
+    pub fn clear_image(&mut self) {
+        self.title.clear();
+        self.status = "— × —     0 B".to_owned();
+        self.message = "打开图片以开始".to_owned();
+        self.image = None;
+        self.zoom = 1.0;
+        self.fit_mode = true;
+        self.pan_x = 0.0;
+        self.pan_y = 0.0;
+        self.pan_last_position = None;
+        self.zoom_wheel_remainder = 0;
     }
 
     fn create_target(&mut self) -> Result<()> {
@@ -1602,6 +1652,17 @@ impl Renderer {
                     &self.caption_hover_brush,
                 );
             }
+            draw_icon(
+                &self.context,
+                &self.d2d_factory,
+                &self.icons.delete,
+                inset(controls.delete, icon_inset),
+                if self.image.is_some() {
+                    &self.primary_text_brush
+                } else {
+                    &self.muted_text_brush
+                },
+            );
             draw_icon(
                 &self.context,
                 &self.d2d_factory,
@@ -2542,6 +2603,11 @@ fn constrain_pan_axis(pan: f32, image_extent: f32, canvas_extent: f32) -> f32 {
     pan.clamp(-limit, limit)
 }
 
+fn selected_index_after_removal(item_count_before: usize, removed_index: usize) -> Option<usize> {
+    let remaining = item_count_before.saturating_sub(1);
+    (remaining > 0).then(|| removed_index.min(remaining - 1))
+}
+
 fn pan_after_anchored_zoom(
     canvas: RectF,
     old_destination: RectF,
@@ -2719,6 +2785,14 @@ mod tests {
         assert!(image_exceeds_canvas(canvas, 700.0, 601.0));
         assert!(!image_exceeds_canvas(canvas, 800.0, 600.0));
         assert!(!image_exceeds_canvas(canvas, 800.25, 600.25));
+    }
+
+    #[test]
+    fn deletion_selects_the_next_item_or_falls_back_to_the_previous_one() {
+        assert_eq!(selected_index_after_removal(4, 1), Some(1));
+        assert_eq!(selected_index_after_removal(4, 3), Some(2));
+        assert_eq!(selected_index_after_removal(1, 0), None);
+        assert_eq!(selected_index_after_removal(0, 0), None);
     }
 
     #[test]

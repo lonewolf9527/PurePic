@@ -2,6 +2,7 @@ use crate::ui::layout::RectF;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatusControl {
+    Delete,
     ActualSize,
     ZoomMenu,
     ZoomOut,
@@ -13,6 +14,7 @@ pub enum StatusControl {
 impl StatusControl {
     pub const fn tooltip(self) -> Option<(&'static str, f32)> {
         match self {
+            Self::Delete => Some(("移到回收站 (Del)", 116.0)),
             Self::ActualSize => Some(("实际大小", 76.0)),
             Self::ZoomMenu => Some(("选择缩放比例", 104.0)),
             Self::ZoomOut => Some(("缩小", 52.0)),
@@ -25,6 +27,7 @@ impl StatusControl {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StatusControlsLayout {
+    pub delete: RectF,
     pub actual_size: RectF,
     pub zoom_menu: RectF,
     pub zoom_out: RectF,
@@ -87,11 +90,13 @@ impl StatusControlsLayout {
         const GAP: f32 = 4.0;
         const SLIDER_GAP: f32 = 0.0;
         const RIGHT_PADDING: f32 = 12.0;
-        let total = BUTTON * 4.0 + MENU + SLIDER + GAP * 3.0 + SLIDER_GAP * 2.0;
+        let total = BUTTON * 5.0 + MENU + SLIDER + GAP * 4.0 + SLIDER_GAP * 2.0;
         let y = status_bar.y + (status_bar.height - BUTTON).max(0.0) * 0.5;
         let menu_y = status_bar.y + (status_bar.height - MENU_HEIGHT).max(0.0) * 0.5;
         let mut x = (status_bar.right() - RIGHT_PADDING - total).max(status_bar.x);
 
+        let delete = RectF::new(x, y, BUTTON, BUTTON);
+        x += BUTTON + GAP;
         let actual_size = RectF::new(x, y, BUTTON, BUTTON);
         x += BUTTON + GAP;
         let zoom_menu = RectF::new(x, menu_y, MENU, MENU_HEIGHT);
@@ -105,6 +110,7 @@ impl StatusControlsLayout {
         let fullscreen = RectF::new(x, y, BUTTON, BUTTON);
 
         Self {
+            delete,
             actual_size,
             zoom_menu,
             zoom_out,
@@ -116,6 +122,7 @@ impl StatusControlsLayout {
 
     pub fn hit_test(self, x: f32, y: f32) -> Option<StatusControl> {
         [
+            (StatusControl::Delete, self.delete),
             (StatusControl::ActualSize, self.actual_size),
             (StatusControl::ZoomMenu, self.zoom_menu),
             (StatusControl::ZoomOut, self.zoom_out),
@@ -129,6 +136,7 @@ impl StatusControlsLayout {
 
     pub fn rect(self, control: StatusControl) -> RectF {
         match control {
+            StatusControl::Delete => self.delete,
             StatusControl::ActualSize => self.actual_size,
             StatusControl::ZoomMenu => self.zoom_menu,
             StatusControl::ZoomOut => self.zoom_out,
@@ -157,6 +165,10 @@ mod tests {
     #[test]
     fn buttons_expose_tooltips_but_slider_does_not() {
         assert_eq!(
+            StatusControl::Delete.tooltip(),
+            Some(("移到回收站 (Del)", 116.0))
+        );
+        assert_eq!(
             StatusControl::ActualSize.tooltip(),
             Some(("实际大小", 76.0))
         );
@@ -172,6 +184,7 @@ mod tests {
         assert_eq!(layout.zoom_menu.y, 706.0);
         assert_eq!(layout.actual_size.height, 36.0);
         assert_eq!(layout.actual_size.y, 704.0);
+        assert_eq!(layout.actual_size.x, layout.delete.right() + 4.0);
         assert_eq!(layout.slider.x, layout.zoom_out.right());
         assert_eq!(layout.zoom_in.x, layout.slider.right());
     }

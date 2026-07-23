@@ -4,6 +4,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::image::{DecodedImage, decode_preview};
 use crate::platform::chrome::{apply_dwm_attributes, non_client_hit_test};
+use crate::platform::recycle::move_file_to_recycle_bin;
 use crate::platform::registry::{self, SavedWindowState, ThumbnailPreferences};
 use crate::platform::thumbnails::{
     DirectoryScanResult, ThumbnailLoader, ThumbnailTask, spawn_directory_scan,
@@ -284,6 +285,9 @@ unsafe extern "system" fn window_proc(
                     PointerAction::ToggleFullscreen => {
                         fullscreen_request = Some(!state.fullscreen);
                     }
+                    PointerAction::DeleteCurrent => {
+                        delete_current_image(hwnd, state);
+                    }
                     PointerAction::ToggleContextMenu => {
                         let registered = !state.context_menu_registered;
                         if registry::set_context_menu_registered(registered).is_ok() {
@@ -410,6 +414,9 @@ unsafe extern "system" fn window_proc(
                             queue_thumbnail_requests(state);
                             let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
                         }
+                    }
+                    0x2E => {
+                        delete_current_image(hwnd, state);
                     }
                     0x7A => {
                         fullscreen_request = Some(!state.fullscreen);
@@ -776,6 +783,35 @@ fn open_thumbnail(hwnd: HWND, state: &mut WindowState, index: usize) {
         state.renderer.select_thumbnail(index);
         request_image(hwnd, state, path);
     }
+}
+
+fn delete_current_image(hwnd: HWND, state: &mut WindowState) {
+    if !state.renderer.has_image() {
+        return;
+    }
+    let Some(path) = state.requested_path.clone() else {
+        return;
+    };
+    if let Err(error) = move_file_to_recycle_bin(hwnd, &path) {
+        state
+            .renderer
+            .set_status_message(format!("无法移入回收站：{error}"));
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+        return;
+    }
+
+    state.image_generation = state.image_generation.wrapping_add(1);
+    state.directory_generation = state.directory_generation.wrapping_add(1);
+    state.thumbnail_loader.replace_pending(Vec::new());
+    let replacement = state.renderer.remove_thumbnail_and_select_neighbor(&path);
+    if let Some(replacement) = replacement {
+        request_image(hwnd, state, replacement);
+    } else {
+        state.requested_path = None;
+        state.renderer.clear_image();
+    }
+    queue_thumbnail_requests(state);
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
 fn save_thumbnail_preferences(state: &WindowState) {
