@@ -168,10 +168,18 @@ pub fn spawn_directory_scan(
 
 fn enumerate_images(current_path: &Path) -> Vec<PathBuf> {
     let Some(directory) = current_path.parent() else {
-        return vec![current_path.to_path_buf()];
+        return current_path
+            .is_file()
+            .then(|| current_path.to_path_buf())
+            .into_iter()
+            .collect();
     };
     let Ok(entries) = std::fs::read_dir(directory) else {
-        return vec![current_path.to_path_buf()];
+        return current_path
+            .is_file()
+            .then(|| current_path.to_path_buf())
+            .into_iter()
+            .collect();
     };
     let mut paths: Vec<_> = entries
         .filter_map(Result::ok)
@@ -184,7 +192,7 @@ fn enumerate_images(current_path: &Path) -> Vec<PathBuf> {
         })
         .filter(|path| is_supported_image(path))
         .collect();
-    if !paths.iter().any(|path| paths_equal(path, current_path)) {
+    if current_path.is_file() && !paths.iter().any(|path| paths_equal(path, current_path)) {
         paths.push(current_path.to_path_buf());
     }
     paths
@@ -205,9 +213,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_directory_still_keeps_the_current_image() {
+    fn missing_current_image_is_not_returned_as_a_stale_catalog_item() {
         let path = Path::new(r"Z:\definitely-missing\current.jpg");
-        assert_eq!(enumerate_images(path), [path]);
+        assert!(enumerate_images(path).is_empty());
     }
 
     #[test]

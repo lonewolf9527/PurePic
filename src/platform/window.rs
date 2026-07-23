@@ -1,5 +1,5 @@
 use std::mem::size_of;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::image::{DecodedImage, decode_preview};
@@ -11,6 +11,7 @@ use crate::platform::thumbnails::{
 };
 use crate::render::{PointerAction, Renderer};
 use purepic::ui::chrome::CaptionButton;
+use purepic::ui::thumbnail::natural_path_compare;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
@@ -554,10 +555,22 @@ unsafe extern "system" fn window_proc(
                     if result.generation != state.directory_generation {
                         continue;
                     }
-                    if let Some(current_path) = state.requested_path.as_deref() {
-                        state
-                            .renderer
-                            .set_thumbnail_catalog(result.paths, current_path);
+                    let Some(current_path) = state.requested_path.clone() else {
+                        continue;
+                    };
+                    let paths = result.paths;
+                    if paths.iter().any(|path| paths_equal(path, &current_path)) {
+                        state.renderer.set_thumbnail_catalog(paths, &current_path);
+                    } else if let Some(replacement) =
+                        replacement_for_missing_current(&paths, &current_path)
+                    {
+                        state.renderer.set_thumbnail_catalog(paths, &replacement);
+                        request_image(hwnd, state, replacement);
+                    } else {
+                        state.image_generation = state.image_generation.wrapping_add(1);
+                        state.requested_path = None;
+                        state.renderer.set_thumbnail_catalog(paths, &current_path);
+                        state.renderer.clear_image();
                     }
                 }
                 queue_thumbnail_requests(state);
@@ -839,6 +852,19 @@ fn refresh_image_catalog(hwnd: HWND, state: &mut WindowState) {
     );
 }
 
+fn replacement_for_missing_current(paths: &[PathBuf], current_path: &Path) -> Option<PathBuf> {
+    paths
+        .iter()
+        .find(|path| natural_path_compare(path, current_path).is_gt())
+        .or_else(|| paths.last())
+        .cloned()
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
 fn save_thumbnail_preferences(state: &WindowState) {
     let (visible, dock) = state.renderer.thumbnail_preferences();
     let _ = registry::save_thumbnail_preferences(ThumbnailPreferences { visible, dock });
@@ -1031,6 +1057,26 @@ mod tests {
                 height: 1000,
                 maximized: true,
             }
+        );
+    }
+
+    #[test]
+    fn missing_current_image_selects_the_next_or_previous_catalog_item() {
+        let paths = vec![
+            PathBuf::from(r"C:\images\1.jpg"),
+            PathBuf::from(r"C:\images\3.jpg"),
+        ];
+        assert_eq!(
+            replacement_for_missing_current(&paths, Path::new(r"C:\images\2.jpg")),
+            Some(PathBuf::from(r"C:\images\3.jpg"))
+        );
+        assert_eq!(
+            replacement_for_missing_current(&paths, Path::new(r"C:\images\4.jpg")),
+            Some(PathBuf::from(r"C:\images\3.jpg"))
+        );
+        assert_eq!(
+            replacement_for_missing_current(&[], Path::new("2.jpg")),
+            None
         );
     }
 }
