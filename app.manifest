@@ -3,7 +3,7 @@
   <assemblyIdentity
     name="PurePic"
     processorArchitecture="amd64"
-    version="1.0.0.0"
+    version="1.1.0.0"
     type="win32"
   />
   <description>PurePic image viewer</description>

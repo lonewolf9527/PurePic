@@ -4,7 +4,7 @@ PurePic 是一个面向 Windows x64 的轻量级原生图片查看器，关注�
 
 > 本项目的设计、代码和文档均由 AI 制作。
 
-当前 `1.0.0` Release 的单体 `PurePic.exe` 仅为 **681 KiB（697,344 字节）**，无需安装即可直接运行。
+当前 `1.1.0` Release 的单体 `PurePic.exe` 仅为 **674 KiB（690,176 字节）**，无需安装即可直接运行。
 
 ![PurePic 演示图](images/screenshot.jpg)
 
@@ -13,6 +13,7 @@ PurePic 是一个面向 Windows x64 的轻量级原生图片查看器，关注�
 - 使用 WIC 解码 PNG、JPEG、BMP、GIF、TIFF 和 WebP 等常见图片格式
 - 支持缩放、平移、适应窗口、实际大小和全屏查看
 - 支持同目录图片切换及可停靠的缩略图栏
+- 支持刷新当前图片列表，以及将当前图片移入回收站
 - 支持注册图片右键菜单，以及跳转到 Windows 默认应用设置
 - 支持 Per-Monitor V2 DPI 和 Windows 原生窗口行为
 - 使用有界后台任务队列加载缩略图，并按字节预算管理缩略图缓存
